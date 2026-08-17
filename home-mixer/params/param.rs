@@ -917,6 +917,13 @@ param!(
     "rust_home_mixer_ads_blender",
     "partition_organic_low_risk"
 );
+
+param!(
+    EnableAdsBrandSafetyVerdictV2,
+    bool,
+    "rust_home_mixer_ads_bs_v2_exp_enabled",
+    false
+);
 param!(
     AdsTimeGapTSec,
     f64,

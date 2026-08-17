@@ -11,6 +11,7 @@ from strato_http.queries.data_types import (
     CardMetadataV2 as StratoCardMetadataV2,
     PollCardMetadata as StratoPollCardMetadata,
     GrokShareCardMetadata as StratoGrokShareCardMetadata,
+    GrokShareMetadata as StratoGrokShareMetadata,
     ArticleMetadata as StratoArticleMetadata,
     ListMetadata as StratoListMetadata,
     ChatGroupMetadata as StratoChatGroupMetadata,
@@ -30,6 +31,7 @@ from grox.core.data_loaders.data_types import (
     BroadcastMetadata,
     PollCard,
     GrokShareCard,
+    GrokShare,
     ArticleMetadata,
     ListMetadata,
     ChatGroupMetadata,
@@ -117,6 +119,12 @@ class PostMapper:
                 cls._from_strato_cardmetadataV2_to_cardV2(cardV2)
                 for cardV2 in post_metadata.cardMetadatasV2
             ]
+        grok_share_metadatas = None
+        if post_metadata.grokShareMetadatas:
+            grok_share_metadatas = [
+                cls._from_strato_grok_share_metadata(m)
+                for m in post_metadata.grokShareMetadatas
+            ]
         article_metadata = None
         if post_metadata.articleMetadata:
             article_metadata = cls._from_strato_article_metadata_to_article_metadata(
@@ -151,6 +159,7 @@ class PostMapper:
             ancestors=[],
             screenshot=None,
             cardsV2=cardsV2,
+            grok_share_metadatas=grok_share_metadatas,
             article_metadata=article_metadata,
             list_metadata=list_metadata,
             chat_group_metadata=chat_group_metadata,
@@ -302,6 +311,13 @@ class PostMapper:
         cls, metadata: StratoGrokShareCardMetadata
     ) -> GrokShareCard:
         return GrokShareCard(sender=metadata.sender, message=metadata.message)
+
+    @classmethod
+    def _from_strato_grok_share_metadata(
+        cls, metadata: StratoGrokShareMetadata
+    ) -> GrokShare:
+        sender = metadata.sender.name if metadata.sender is not None else None
+        return GrokShare(sender=sender, message=metadata.message)
 
     @classmethod
     def _from_strato_user_metadata_to_user(

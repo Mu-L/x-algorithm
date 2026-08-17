@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use xai_x_thrift::tweet_safety_label::{SafetyLabel, SafetyLabelSource, SafetyLabelType};
 
@@ -56,6 +57,82 @@ pub fn compute_verdict(
     }
 
     if LOW_RISK_LABELS.iter().any(|l| labels.contains_key(l)) {
+        return BrandSafetyVerdict::LowRisk;
+    }
+
+    BrandSafetyVerdict::Safe
+}
+
+pub(crate) const MEDIUM_RISK_LABELS_V2: &[SafetyLabelType] = &[
+    SafetyLabelType::NSFW_HIGH_PRECISION,
+    SafetyLabelType::NSFW_HIGH_RECALL,
+    SafetyLabelType::NSFA_HIGH_PRECISION,
+    SafetyLabelType::NSFA_KEYWORDS_HIGH_PRECISION,
+    SafetyLabelType::GORE_AND_VIOLENCE_HIGH_PRECISION,
+    SafetyLabelType::NSFW_REPORTED_HEURISTICS,
+    SafetyLabelType::GORE_AND_VIOLENCE_REPORTED_HEURISTICS,
+    SafetyLabelType::NSFW_CARD_IMAGE,
+    SafetyLabelType::DO_NOT_AMPLIFY,
+    SafetyLabelType::MALICIOUS_URL,
+    SafetyLabelType::NSFA_COMMUNITY_NOTE,
+    SafetyLabelType::PDNA,
+    SafetyLabelType::EGREGIOUS_NSFW,
+    SafetyLabelType::GROK_NSFA_V2,
+    SafetyLabelType::GROK_NSFA_EXPANDED_V2,
+    SafetyLabelType::NSFW_TEXT,
+];
+
+pub(crate) const LOW_RISK_LABELS_V2: &[SafetyLabelType] = &[
+    SafetyLabelType::NSFA_LIMITED_INVENTORY,
+    SafetyLabelType::GROK_NSFA_LIMITED_V2,
+    SafetyLabelType::NSFA_HIGH_RECALL,
+];
+
+fn strip_v1_grok_written(
+    labels: &HashMap<SafetyLabelType, SafetyLabel>,
+) -> Cow<'_, HashMap<SafetyLabelType, SafetyLabel>> {
+    const V1_DUAL_WRITTEN: &[SafetyLabelType] = &[
+        SafetyLabelType::NSFA_HIGH_PRECISION,
+        SafetyLabelType::NSFA_LIMITED_INVENTORY,
+    ];
+    const PROMPT_OWNED_RULES: &[i64] = &[1400, 1410, 1420, 1500, 1510, 1610, 1700];
+    let is_v1_grox_written = |label_type: &SafetyLabelType, label: &SafetyLabel| {
+        V1_DUAL_WRITTEN.contains(label_type)
+            && botmaker_rule_id_from(label)
+                .is_some_and(|rule_id| PROMPT_OWNED_RULES.contains(&rule_id))
+    };
+    if !labels.iter().any(|(t, l)| is_v1_grox_written(t, l)) {
+        return Cow::Borrowed(labels);
+    }
+    Cow::Owned(
+        labels
+            .iter()
+            .filter(|&(t, l)| !is_v1_grox_written(t, l))
+            .map(|(t, l)| (*t, l.clone()))
+            .collect(),
+    )
+}
+
+pub(crate) fn compute_verdict_v2(
+    labels: &HashMap<SafetyLabelType, SafetyLabel>,
+    tweet_id: u64,
+) -> BrandSafetyVerdict {
+    let labels = strip_v1_grok_written(labels);
+    if MEDIUM_RISK_LABELS_V2.iter().any(|l| labels.contains_key(l)) {
+        return BrandSafetyVerdict::MediumRisk;
+    }
+
+    let scored_by_grok = labels.contains_key(&SafetyLabelType::GROK_SFA_V2)
+        || labels.contains_key(&SafetyLabelType::GROK_NSFA_LIMITED_V2);
+    if !scored_by_grok {
+        return BrandSafetyVerdict::MediumRisk;
+    }
+
+    if tweet_id >= PTOS_CUTOFF_TWEET_ID && !labels.contains_key(&SafetyLabelType::PTOS_REVIEWED) {
+        return BrandSafetyVerdict::MediumRisk;
+    }
+
+    if LOW_RISK_LABELS_V2.iter().any(|l| labels.contains_key(l)) {
         return BrandSafetyVerdict::LowRisk;
     }
 
@@ -211,6 +288,89 @@ mod tests {
             compute_verdict(&labels, PRE_CUTOFF_ID),
             BrandSafetyVerdict::Safe
         );
+    }
+
+    #[test]
+    fn v2_mirrors_v1_across_tier_matrix() {
+        fn to_v2(v1_set: &[SafetyLabelType]) -> Vec<SafetyLabelType> {
+            v1_set
+                .iter()
+                .filter_map(|l| match *l {
+                    SafetyLabelType::GROK_SFA => Some(SafetyLabelType::GROK_SFA_V2),
+                    SafetyLabelType::GROK_NSFA => Some(SafetyLabelType::GROK_NSFA_V2),
+                    SafetyLabelType::GROK_NSFA_LIMITED => {
+                        Some(SafetyLabelType::GROK_NSFA_LIMITED_V2)
+                    }
+                    SafetyLabelType::NSFA_HIGH_PRECISION
+                    | SafetyLabelType::NSFA_LIMITED_INVENTORY => None,
+                    other => Some(other),
+                })
+                .collect()
+        }
+
+        let matrix: &[&[SafetyLabelType]] = &[
+            &[],
+            &[SafetyLabelType::GROK_SFA],
+            &[SafetyLabelType::GROK_SFA, SafetyLabelType::PTOS_REVIEWED],
+            &[
+                SafetyLabelType::NSFA_LIMITED_INVENTORY,
+                SafetyLabelType::GROK_NSFA_LIMITED,
+            ],
+            &[
+                SafetyLabelType::NSFA_LIMITED_INVENTORY,
+                SafetyLabelType::GROK_NSFA_LIMITED,
+                SafetyLabelType::PTOS_REVIEWED,
+            ],
+            &[
+                SafetyLabelType::GROK_SFA,
+                SafetyLabelType::NSFA_HIGH_PRECISION,
+                SafetyLabelType::GROK_NSFA,
+            ],
+        ];
+
+        for v1_set in matrix {
+            let v2_set = to_v2(v1_set);
+            for tweet_id in [PRE_CUTOFF_ID, POST_CUTOFF_ID] {
+                assert_eq!(
+                    compute_verdict(&labels_with(v1_set), tweet_id),
+                    compute_verdict_v2(&labels_with(&v2_set), tweet_id),
+                    "v1 {v1_set:?} vs v2 {v2_set:?} at tweet_id {tweet_id}"
+                );
+            }
+        }
+
+        let labels = labels_with(&[
+            SafetyLabelType::GROK_SFA_V2,
+            SafetyLabelType::GROK_NSFA_EXPANDED_V2,
+        ]);
+        assert_eq!(
+            compute_verdict_v2(&labels, PRE_CUTOFF_ID),
+            BrandSafetyVerdict::MediumRisk
+        );
+
+        use std::collections::HashSet;
+        let medium: HashSet<_> = MEDIUM_RISK_LABELS.iter().copied().collect();
+        let medium_v2: HashSet<_> = MEDIUM_RISK_LABELS_V2.iter().copied().collect();
+        let expected_medium_v2: HashSet<_> = medium
+            .iter()
+            .copied()
+            .filter(|l| *l != SafetyLabelType::GROK_NSFA)
+            .chain([
+                SafetyLabelType::GROK_NSFA_V2,
+                SafetyLabelType::GROK_NSFA_EXPANDED_V2,
+            ])
+            .collect();
+        assert_eq!(medium_v2, expected_medium_v2);
+
+        let low: HashSet<_> = LOW_RISK_LABELS.iter().copied().collect();
+        let low_v2: HashSet<_> = LOW_RISK_LABELS_V2.iter().copied().collect();
+        let expected_low_v2: HashSet<_> = low
+            .iter()
+            .copied()
+            .filter(|l| *l != SafetyLabelType::GROK_NSFA_LIMITED)
+            .chain([SafetyLabelType::GROK_NSFA_LIMITED_V2])
+            .collect();
+        assert_eq!(low_v2, expected_low_v2);
     }
 
     #[test]
