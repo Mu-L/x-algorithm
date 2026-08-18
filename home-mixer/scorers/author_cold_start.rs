@@ -102,12 +102,7 @@ fn count_tracked_ids(
             continue;
         }
         let source = c.served_type.map(|t| t as i32).unwrap_or(0);
-        if tracked.contains(&c.tweet_id) {
-            *counts.entry((c.tweet_id, source)).or_insert(0) += 1;
-        }
-        if tracked.contains(&c.author_id) {
-            *counts.entry((c.author_id, source)).or_insert(0) += 1;
-        }
+        *counts.entry((c.tweet_id, source)).or_insert(0) += 1;
     }
     counts
 }
@@ -720,18 +715,22 @@ rust_home_mixer:
         ];
         let counts = count_tracked_ids(&candidates, &tracked);
         assert_eq!(
-            counts.get(&(10, pb::ServedType::ForYouPhoenixRetrieval as i32)),
+            counts.get(&(1, pb::ServedType::ForYouPhoenixRetrieval as i32)),
             Some(&1)
         );
         assert_eq!(
-            counts.get(&(10, pb::ServedType::ForYouPhoenixRetrievalMoe as i32)),
+            counts.get(&(2, pb::ServedType::ForYouPhoenixRetrievalMoe as i32)),
             Some(&1)
         );
         assert_eq!(
             counts.get(&(20, pb::ServedType::ForYouInNetwork as i32)),
             Some(&1)
         );
-        assert_eq!(counts.get(&(30, 0)), None);
+        assert_eq!(
+            counts.get(&(10, pb::ServedType::ForYouPhoenixRetrieval as i32)),
+            None
+        );
+        assert_eq!(counts.get(&(3, 0)), None);
     }
 
     #[test]

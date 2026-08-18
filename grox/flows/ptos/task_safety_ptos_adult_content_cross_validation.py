@@ -127,9 +127,7 @@ class TaskSafetyPtosAdultContentCrossValidation(TaskWithPost):
             return
 
         is_hard = judged.policyType == SafetyPolicyType.AdultContentSexualHard
-        Metrics.counter(metric).add(
-            1, attributes={"outcome": "hard" if is_hard else "soft"}
-        )
+        Metrics.counter(metric).add(1, attributes={"outcome": judged.policyType.value})
         logger.info(
             f"Post {post.id}: grok 4.5 cross validation judged {judged.policyType.value}"
         )

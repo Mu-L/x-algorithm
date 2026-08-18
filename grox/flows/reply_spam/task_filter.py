@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class TaskSpamFilter(TaskFilterWithPost):
-    FOLLOWER_COUNT_THRESHOLD_FOR_SPAM_DETECTION = 40000
+    FOLLOWER_COUNT_THRESHOLD_FOR_SPAM_DETECTION = 60000
 
     @override
     @classmethod
@@ -182,7 +182,7 @@ class TaskCoordinatedSpamFilter(TaskFilterWithPost):
 
 
 class TaskReplyRankingFilter(TaskFilterWithPost):
-    FOLLOWER_COUNT_THRESHOLD_FOR_REPLY_RANKING = 40000
+    FOLLOWER_COUNT_THRESHOLD_FOR_REPLY_RANKING = 60000
 
     @override
     @classmethod
