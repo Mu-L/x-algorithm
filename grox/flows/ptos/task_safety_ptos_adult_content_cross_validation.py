@@ -14,9 +14,7 @@ from grox.flows.ptos.state import (
     SafetyPtosViolatedPolicy,
 )
 from monitor.metrics import Metrics
-from strato_http.queries.safety_post_annotations_result import (
-    StratoSafetyPostAnnotationsResultDirectMh,
-)
+from grox.flows.ptos.prior_nsfw import post_is_already_flagged_nsfw
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +38,6 @@ class CompareOutcome(str, Enum):
 
 class TaskSafetyPtosAdultContentCrossValidation(TaskWithPost):
     _judge = SafetyPtosAdultContentCrossValidationJudge()
-    _result_direct_mh = StratoSafetyPostAnnotationsResultDirectMh()
 
     @classmethod
     async def _exec_with_post(cls, ctx: TaskContext, post: Post) -> None:
@@ -81,26 +78,12 @@ class TaskSafetyPtosAdultContentCrossValidation(TaskWithPost):
         )
 
         if is_deluxe and outcome.is_disagreement:
-            if await cls._post_is_already_flagged_nsfw(post):
+            if await post_is_already_flagged_nsfw(ctx, post):
                 Metrics.counter(f"{_METRIC_PREFIX}.skipped.count").add(
                     1, attributes={"reason": "prior_nsfw"}
                 )
                 return
             await cls._cross_validate(ctx, post)
-
-    @classmethod
-    async def _post_is_already_flagged_nsfw(cls, post: Post) -> bool:
-        try:
-            result = await cls._result_direct_mh.fetch(int(post.id))
-        except Exception as e:
-            Metrics.counter(f"{_METRIC_PREFIX}.nsfw_lookup_error.count").add(1)
-            logger.warning(
-                f"Post {post.id}: NSFW MH lookup failed, treating as not flagged: {e}"
-            )
-            return False
-        return bool(
-            result and result.safetyBoolMetadata and result.safetyBoolMetadata.isNsfw
-        )
 
     @staticmethod
     def _compare_outcome(

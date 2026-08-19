@@ -1,5 +1,6 @@
 pub mod clients;
 pub mod config;
+pub mod dark_traffic_setup;
 pub(crate) mod filter;
 pub(crate) mod filter_tweets;
 pub(crate) mod get_safety_labels;

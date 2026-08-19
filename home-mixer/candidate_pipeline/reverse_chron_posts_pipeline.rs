@@ -1,6 +1,7 @@
 use crate::candidate_hydrators::ads_brand_safety_vf_hydrator::AdsBrandSafetyVfHydrator;
 use crate::candidate_hydrators::conversation_gap_ancestor_hydrator::ConversationGapAncestorHydrator;
 use crate::candidate_hydrators::core_data_candidate_hydrator::CoreDataCandidateHydrator;
+use crate::candidate_hydrators::quoted_post_text_hydrator::QuotedPostTextHydrator;
 use crate::candidate_hydrators::tweet_type_metrics_hydrator::TweetTypeMetricsHydrator;
 use crate::candidate_hydrators::vf_following_candidate_hydrator::VFFollowingCandidateHydrator;
 use crate::clients::night_owl_client::{MockNightOwlClient, NightOwlClient, ProdNightOwlClient};
@@ -8,6 +9,7 @@ use crate::clients::s2s::{S2S_CHAIN_PATH, S2S_CRT_PATH, S2S_KEY_PATH};
 use crate::clients::tweet_entity_service_client::{MockTESClient, ProdTESClient, TESClient};
 use crate::filters::ancillary_vf_filter::AncillaryVFFilter;
 use crate::filters::following_retweet_deduplication_filter::FollowingRetweetDeduplicationFilter;
+use crate::filters::following_viewer_muted_keyword_filter::FollowingViewerMutedKeywordFilter;
 use crate::filters::self_reply_chain_filter::SelfReplyChainFilter;
 use crate::filters::vf_filter::VFFilter;
 use crate::models::candidate::PostCandidate;
@@ -129,11 +131,15 @@ impl ReverseChronPostsPipeline {
 
         let hydrators: Vec<Box<dyn Hydrator<ScoredPostsQuery, PostCandidate>>> = vec![
             Box::new(CoreDataCandidateHydrator::new(Arc::clone(&tes_client)).await),
-            Box::new(ConversationGapAncestorHydrator::new(tes_client)),
+            Box::new(ConversationGapAncestorHydrator::new(Arc::clone(
+                &tes_client,
+            ))),
+            Box::new(QuotedPostTextHydrator::new(tes_client)),
         ];
 
         let filters: Vec<Box<dyn Filter<ScoredPostsQuery, PostCandidate>>> = vec![
             Box::new(FollowingRetweetDeduplicationFilter),
+            Box::new(FollowingViewerMutedKeywordFilter::new()),
             Box::new(SelfReplyChainFilter),
         ];
 

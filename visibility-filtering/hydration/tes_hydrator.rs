@@ -666,6 +666,14 @@ mod tests {
             unreachable!()
         }
 
+        async fn get_trusted_friends_controls(
+            &self,
+            _tweet_ids: Vec<u64>,
+        ) -> HashMap<u64, Result<Option<xai_core_entities::entities::TrustedFriendsControl>>>
+        {
+            unreachable!()
+        }
+
         async fn get_grok_post_ids(
             &self,
             _tweet_ids: Vec<u64>,

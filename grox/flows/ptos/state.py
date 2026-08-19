@@ -124,3 +124,4 @@ class LiveClusterAnchorKafkaVerdict(BaseModel):
 class SafetyPtosState:
     annotations: SafetyPostAnnotations | None = None
     safemodel_sex_nudity: SafemodelResult = field(default_factory=SafemodelResult)
+    prior_nsfw: bool | None = None

@@ -1,6 +1,8 @@
 use clap::Parser;
+use xai_dark_traffic::RejectDarkTrafficLayer;
 use xai_grpc_compression::GrpcZstdLayer;
 use xai_visibility_filtering_proto as vf_pb;
+use xai_visibility_filtering_service::dark_traffic_setup;
 use xai_visibility_filtering_service::server::VFServer;
 use xai_x_rpc::grpc_client::TlsMode;
 use xai_x_service_builder::XServiceBuilder;
@@ -30,6 +32,8 @@ async fn main() -> anyhow::Result<()> {
         .with_tls(TlsMode::server_mtls_from_env()?)
         .with_reflection(vf_pb::FILE_DESCRIPTOR_SET)
         .with_layer(GrpcZstdLayer)
+        .with_layer(dark_traffic_setup::resolve_layer())
+        .with_layer(RejectDarkTrafficLayer::from_env())
         .http_routes(xai_profiling::profiling_router())
         .run::<VFServer>(())
         .await
