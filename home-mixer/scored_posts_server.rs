@@ -117,6 +117,8 @@ fn candidates_to_scored_posts(candidates: &[PostCandidate]) -> Vec<ScoredPost> {
                     .map(|d| d as f32),
                 topic_feedback_topic: candidate.topic_feedback_topic.clone(),
                 topic_feedback_topic_id: candidate.topic_feedback_topic_id.clone(),
+                ai_trend_name: candidate.ai_trend_name.clone(),
+                ai_trend_id: candidate.ai_trend_id.clone(),
             }
         })
         .collect()

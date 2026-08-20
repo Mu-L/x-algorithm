@@ -700,6 +700,16 @@ impl RankingScorer {
         contexts
     }
 
+    fn served_slate_contexts(
+        query: &ScoredPostsQuery,
+        candidates: &[PostCandidate],
+    ) -> Option<Vec<SlateContext>> {
+        if !query.params.get(UseServedSlateContext) {
+            return None;
+        }
+        candidates.iter().map(|c| c.served_slate_context).collect()
+    }
+
     fn stored_slate_contexts(candidates: &[PostCandidate]) -> Option<Vec<SlateContext>> {
         candidates.iter().map(|c| c.slate_context).collect()
     }
@@ -806,11 +816,12 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for RankingScorer {
         };
 
         if mpn_scoring {
-            let persisted_contexts: Option<Vec<SlateContext>> = if query.has_cached_posts {
-                Self::stored_slate_contexts(candidates)
-            } else {
-                Some(Self::compute_slate_contexts(candidates, &weighted_scores))
-            };
+            let persisted_contexts: Option<Vec<SlateContext>> =
+                match Self::served_slate_contexts(query, candidates) {
+                    Some(served) => Some(served),
+                    None if query.has_cached_posts => Self::stored_slate_contexts(candidates),
+                    None => Some(Self::compute_slate_contexts(candidates, &weighted_scores)),
+                };
 
             let diversity_multipliers: Vec<f64> = if enable_author_diversity {
                 let recomputed_contexts;
@@ -875,11 +886,12 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for RankingScorer {
             .author_cold_start
             .apply(query, candidates, &weighted_scores);
 
-        let persisted_contexts: Option<Vec<SlateContext>> = if query.has_cached_posts {
-            Self::stored_slate_contexts(candidates)
-        } else {
-            Some(Self::compute_slate_contexts(candidates, &adjusted_scores))
-        };
+        let persisted_contexts: Option<Vec<SlateContext>> =
+            match Self::served_slate_contexts(query, candidates) {
+                Some(served) => Some(served),
+                None if query.has_cached_posts => Self::stored_slate_contexts(candidates),
+                None => Some(Self::compute_slate_contexts(candidates, &adjusted_scores)),
+            };
 
         let diversity_adjusted = if enable_author_diversity {
             let recomputed_contexts;

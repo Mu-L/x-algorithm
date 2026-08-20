@@ -111,7 +111,7 @@ _eapi_4_6_internal_breaker = CircuitBreaker(
     ModelName.EAPI_GROK_4_6_INTERNAL, _EAPI_4_6_INTERNAL_BREAKER_CONFIG
 )
 
-_GROK_4_6_INTERNAL_DIAL = 0.1
+_GROK_4_6_INTERNAL_DIAL = 0.3
 
 
 class SafetyPtosCategoryClassifier:

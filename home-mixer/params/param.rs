@@ -244,6 +244,12 @@ param!(
     false
 );
 param!(
+    UseServedSlateContext,
+    bool,
+    "rust_home_mixer_use_served_slate_context",
+    false
+);
+param!(
     OonWeightFactor,
     f64,
     "rust_home_mixer_oon_weight_factor",
@@ -1017,6 +1023,13 @@ param!(
     EnableTopicFeedbackContext,
     bool,
     "rust_home_mixer_enable_topic_feedback_context",
+    false
+);
+
+param!(
+    EnableAiTrendFeedbackContext,
+    bool,
+    "rust_home_mixer_enable_ai_trend_feedback_context",
     false
 );
 

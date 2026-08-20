@@ -347,6 +347,9 @@ class PostMapper:
             )
             if user_metadata.affiliatedBusinessMetadata
             else None,
+            profile_image=Image(url=user_metadata.profileImageUrl)
+            if user_metadata.profileImageUrl
+            else None,
         )
 
     @classmethod

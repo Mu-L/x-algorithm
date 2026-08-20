@@ -23,6 +23,8 @@ pub struct PostCandidate {
     pub score: Option<f64>,
     pub slate_context: Option<SlateContext>,
     #[serde(default)]
+    pub served_slate_context: Option<SlateContext>,
+    #[serde(default)]
     pub mpn_parts: Option<MpnParts>,
     #[serde(
         serialize_with = "serialize_served_type",
@@ -73,6 +75,8 @@ pub struct PostCandidate {
     pub topic_feedback_topic: Option<String>,
     pub topic_feedback_topic_id: Option<String>,
     pub grok_topics: Option<Vec<String>>,
+    pub ai_trend_name: Option<String>,
+    pub ai_trend_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -90,6 +94,25 @@ pub struct SlateContext {
     pub sid_gap_l1: Option<u32>,
     pub sid_gap_l2: Option<u32>,
     pub sid_gap_l3: Option<u32>,
+}
+
+impl From<xai_recsys_proto::SlateContext> for SlateContext {
+    fn from(c: xai_recsys_proto::SlateContext) -> Self {
+        Self {
+            k: c.k,
+            pool_rank: c.pool_rank,
+            pool_rank_gap: c.pool_rank_gap,
+            fatigue: c.fatigue,
+            pre_diversity_score: c.pre_diversity_score,
+            sid_known: c.sid_known,
+            sid_k_l1: c.sid_k1,
+            sid_k_l2: c.sid_k2,
+            sid_k_l3: c.sid_k3,
+            sid_gap_l1: c.sid_gap1,
+            sid_gap_l2: c.sid_gap2,
+            sid_gap_l3: c.sid_gap3,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]

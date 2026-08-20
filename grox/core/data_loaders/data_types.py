@@ -39,6 +39,7 @@ class User(BaseModel):
     urls: list[str] | None = None
     affiliated_business: AffiliatedBusiness | None = None
     recent_posts: list["Post"] | None = None
+    profile_image: "Image | None" = None
 
     @classmethod
     def from_thrift_model(cls, author_metadata: t.AuthorMetadata) -> "User":
@@ -85,6 +86,9 @@ class User(BaseModel):
                 url=author_metadata.affiliatedBusinessMetadata.url,
             )
             if author_metadata.affiliatedBusinessMetadata
+            else None,
+            profile_image=Image(url=author_metadata.profileImageUrl)
+            if getattr(author_metadata, "profileImageUrl", None)
             else None,
         )
 

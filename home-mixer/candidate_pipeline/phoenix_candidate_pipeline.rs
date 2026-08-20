@@ -1,4 +1,5 @@
 use crate::candidate_hydrators::ads_brand_safety_vf_hydrator::AdsBrandSafetyVfHydrator;
+use crate::candidate_hydrators::ai_trend_feedback_context_hydrator::AiTrendFeedbackContextHydrator;
 use crate::candidate_hydrators::bidirectional_follow_hydrator::BidirectionalFollowHydrator;
 use crate::candidate_hydrators::blocked_by_hydrator::BlockedByHydrator;
 use crate::candidate_hydrators::core_data_candidate_hydrator::CoreDataCandidateHydrator;
@@ -421,6 +422,9 @@ impl PhoenixCandidatePipeline {
                 strato_client: strato_client.clone(),
             }),
             Box::new(TopicFeedbackContextHydrator {
+                strato_client: strato_client.clone(),
+            }),
+            Box::new(AiTrendFeedbackContextHydrator {
                 strato_client: strato_client.clone(),
             }),
         ];
