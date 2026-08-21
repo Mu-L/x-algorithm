@@ -9,18 +9,24 @@ use xai_x_rpc::grpc_client::TlsMode;
 use xai_x_rpc::xds_channel_factory::XdsChannelFactory;
 
 const CONFIG_PATH: &str = "/config/dark-traffic/dark_traffic.yaml";
-const SHADOW_WORKLOAD: &str = "xai-vf-shadow";
+pub const STAGING_XDS_DEST: &str = "xai-vf-service.staging.visibility:grpc";
+
+const FORWARDER_NAME: &str = "staging";
+
+pub fn staging_tls_domain(dc: &str) -> String {
+    format!("visibility.visibility-filtering-service.staging.{dc}.s2s.twttr.net")
+}
 
 pub type DarkLayer = Either<DarkTrafficLayer, tower::layer::util::Identity>;
 
-struct StaticShadowDiscovery;
+struct StaticStagingDiscovery;
 
 #[async_trait]
-impl EndpointDiscovery for StaticShadowDiscovery {
+impl EndpointDiscovery for StaticStagingDiscovery {
     async fn discover(&self) -> anyhow::Result<Vec<EndpointInfo>> {
         Ok(vec![EndpointInfo {
-            name: SHADOW_WORKLOAD.to_string(),
-            xds_dest: format!("{SHADOW_WORKLOAD}.prod.visibility:grpc"),
+            name: FORWARDER_NAME.to_string(),
+            xds_dest: STAGING_XDS_DEST.to_string(),
         }])
     }
 }
@@ -50,7 +56,7 @@ pub fn resolve_layer() -> DarkLayer {
     }
 
     let dc = std::env::var("DATACENTER").unwrap_or_else(|_| "atla".to_string());
-    let domain = format!("visibility.visibility-filtering-service.prod.{dc}.s2s.twttr.net");
+    let domain = staging_tls_domain(&dc);
     info!(domain, "dark_traffic: enabled");
 
     let factory = XdsChannelFactory::new(
@@ -59,7 +65,7 @@ pub fn resolve_layer() -> DarkLayer {
             .with_domain_override(&domain),
     );
 
-    let channels = DynamicChannelManager::new(Arc::new(factory), Arc::new(StaticShadowDiscovery));
+    let channels = DynamicChannelManager::new(Arc::new(factory), Arc::new(StaticStagingDiscovery));
 
     let config = ReloadableDarkTrafficConfigBuilder::new(CONFIG_PATH)
         .forwarders({

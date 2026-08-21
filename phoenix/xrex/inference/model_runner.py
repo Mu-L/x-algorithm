@@ -166,6 +166,29 @@ def _process_start_time_epoch() -> float | None:
         return None
 
 
+_malloc_trim_fn: Any = None
+
+
+def _glibc_malloc_trim() -> tuple[bool, float] | None:
+    global _malloc_trim_fn
+    if _malloc_trim_fn is False:
+        return None
+    try:
+        if _malloc_trim_fn is None:
+            import ctypes
+
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            _malloc_trim_fn = libc.malloc_trim
+            _malloc_trim_fn.argtypes = [ctypes.c_size_t]
+            _malloc_trim_fn.restype = ctypes.c_int
+        t0 = time.time()
+        released = _malloc_trim_fn(0)
+        return bool(released), time.time() - t0
+    except Exception:
+        _malloc_trim_fn = False
+        return None
+
+
 def _save_tensors_to_shm(
     tensors: list[tuple[str, np.ndarray]],
     prefix: str,
@@ -634,6 +657,7 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
 
     hotswap_stage_rate_limit_gbps: float | None = None
     hotswap_stage_chunk_mib: int = 32
+    hotswap_malloc_trim: bool = True
 
     _emb_table_slots: list[np.ndarray] = field(default_factory=list, init=False)
     _active_emb_slot: int = field(default=0, init=False)
@@ -1537,6 +1561,21 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
         self._hotswap_aborted.set()
         self._reset_server_reload_request()
 
+    def _malloc_trim_after_swap(self) -> None:
+        if not self.hotswap_malloc_trim:
+            return
+        result = _glibc_malloc_trim()
+        if result is None:
+            self.hotswap_malloc_trim = False
+            logger.warning("[hotswap] malloc_trim unavailable; per-cycle trim disabled")
+            return
+        released, secs = result
+        if self.metrics_publisher is not None:
+            self.metrics_publisher.checkpoint_reload_step_seconds.labels(
+                step="malloc_trim"
+            ).observe(secs)
+        logger.info("[hotswap] malloc_trim(0) released_any=%s in %.3fs", released, secs)
+
     def _coordinator_loop(self) -> None:
         logger.info("[hotswap] Coordinator thread started (subprocess loader).")
 
@@ -1636,6 +1675,7 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
                         self._live_swap_ready.set()
                         self._swap_complete.wait()
                         self._swap_complete.clear()
+                        self._malloc_trim_after_swap()
                     continue
 
                 if self._hotswap_standby_meta_file is not None:
@@ -1654,6 +1694,7 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
                 self._swap_ready.set()
                 self._swap_complete.wait()
                 self._swap_complete.clear()
+                self._malloc_trim_after_swap()
 
             finally:
                 self._hotswap_cycle_inflight.clear()
@@ -1763,6 +1804,7 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
                     self._swap_ready.set()
                     self._swap_complete.wait()
                     self._swap_complete.clear()
+                    self._malloc_trim_after_swap()
                 elif status == "noop":
                     logger.info("[hotswap] Worker %d: leader reported noop (no new ckpt)", wid)
                     self._reload_noop.set()
@@ -4751,7 +4793,7 @@ class RetrievalModelRunner(
             author_biases=hash_keys.author_biases,
             author_modulus=hash_keys.author_modulus,
             output_vocab_size=self.dataset.hash_table.output_vocab_size,
-            num_continuous_actions=self.model_config.num_continuous_actions,
+            num_continuous_actions=self.dataset.num_continuous_actions,
             history_seq_len=self.history_seq_len,
             candidate_seq_len=self.candidate_seq_len,
             multimodal_embedding_dim=getattr(self.model_config, "multimodal_embedding_dim", 0),

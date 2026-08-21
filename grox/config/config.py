@@ -88,7 +88,6 @@ class ModelName:
     EAPI_GROK_420_REASONING_INTERNAL = "eapi-grok-420-reasoning-internal"
     EAPI_GROK_4_3_INTERNAL = "eapi-grok-4-3-internal"
     EAPI_GROK_4_3_X_ALGO = "eapi-grok-4-3-x-algo"
-    EAPI_GROK_4_5_INTERNAL = "eapi-grok-4-5-internal"
     EAPI_GROK_4_5_X_ALGO = "eapi-grok-4-5-x-algo"
     EAPI_GROK_4_6_INTERNAL = "eapi-grok-4-6-internal"
 

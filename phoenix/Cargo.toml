@@ -9,6 +9,7 @@ members = [
     "crates/serving/xai-recsys-proto",
     "crates/serving/xai-recsys-server",
     "crates/serving/xai-recsys-sid-proto",
+    "crates/storage/xai-o2",
 ]
 
 [workspace.package]
@@ -78,6 +79,7 @@ tonic-reflection = "0.14"
 tower = "0.5"
 tracing = "0.1"
 url = "2"
+xai-o2 = { path = "crates/storage/xai-o2" }
 xai-recsys = { path = "crates/common/xai-recsys" }
 xai-recsys-mm-server = { path = "crates/serving/xai-recsys-mm-server" }
 xai-recsys-proto = { path = "crates/serving/xai-recsys-proto" }
