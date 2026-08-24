@@ -22,7 +22,10 @@ pub(crate) struct AdSpacing {
 }
 
 pub(crate) fn has_avoid(post: &ScoredPost) -> bool {
-    post.brand_safety_verdict() == BrandSafetyVerdict::MediumRisk
+    matches!(
+        post.brand_safety_verdict(),
+        BrandSafetyVerdict::MediumRisk | BrandSafetyVerdict::HighRisk
+    )
 }
 
 pub(crate) fn find_safe_gaps(scored_posts: &[ScoredPost]) -> Vec<usize> {

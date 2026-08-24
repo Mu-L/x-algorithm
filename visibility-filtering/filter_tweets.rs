@@ -1,7 +1,9 @@
 use crate::filter::{FilterOutcome, FilterRequest, FilterTweets};
 use crate::models::{RawCandidate, TweetId, VfAction};
+use crate::reference_compare::{ReferenceCompareHarness, TweetVerdict};
 use crate::rules::metrics::{self as ft_metrics, RequestMetricsGuard};
 use crate::rules::SafetyLevel;
+use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::info;
@@ -9,11 +11,18 @@ use xai_visibility_filtering_proto as vf_pb;
 
 pub struct FilterTweetsEndpoint {
     filter_tweets: FilterTweets,
+    reference_compare: Option<Arc<ReferenceCompareHarness>>,
 }
 
 impl FilterTweetsEndpoint {
-    pub(crate) fn new(filter_tweets: FilterTweets) -> Self {
-        Self { filter_tweets }
+    pub(crate) fn new(
+        filter_tweets: FilterTweets,
+        reference_compare: Option<Arc<ReferenceCompareHarness>>,
+    ) -> Self {
+        Self {
+            filter_tweets,
+            reference_compare,
+        }
     }
 
     pub async fn handle(
@@ -49,6 +58,15 @@ impl FilterTweetsEndpoint {
             })
             .collect();
 
+        let reference_compare = self.reference_compare.as_ref().and_then(|harness| {
+            harness.begin_compare(
+                req.viewer_id,
+                req.country_code.clone(),
+                safety_level,
+                req.tweets.iter().map(|t| t.tweet_id).collect(),
+            )
+        });
+
         let response = self
             .filter_tweets
             .run(FilterRequest {
@@ -58,6 +76,20 @@ impl FilterTweetsEndpoint {
                 candidates,
             })
             .await;
+
+        if let Some(verdicts) = reference_compare {
+            verdicts.send(
+                response
+                    .outcomes
+                    .iter()
+                    .map(|outcome| TweetVerdict {
+                        tweet_id: outcome.tweet_id.0,
+                        verdict: outcome.verdict.clone(),
+                    })
+                    .collect(),
+            );
+        }
+
         let results = response
             .outcomes
             .into_iter()

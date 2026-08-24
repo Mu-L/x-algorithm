@@ -182,15 +182,231 @@ class SafetyPtosCategoryClassifier:
         )
 
 
+def _policy_no_violation(reason: str) -> SafetyPolicy:
+    return SafetyPolicy(policyType=SafetyPolicyType.NoViolation, reason=reason)
+
+
+def _policy_with_type(
+    policy_type: SafetyPolicyType, source: SafetyPolicy, reason: str
+) -> SafetyPolicy:
+    return SafetyPolicy(
+        policyType=policy_type, confidenceScore=source.confidenceScore, reason=reason
+    )
+
+
+class SafetyPtosPolicyCrossValidator:
+    result_pattern = re.compile(r"(.*)<json>(.*)</json>", re.DOTALL)
+
+    def __init__(self):
+        eapi_4_5 = grox_config.get_eapi_model(ModelName.EAPI_GROK_4_5_X_ALGO)
+        self.eapi_4_5_x_algo = EapiSampler(EapiModelConfig(**eapi_4_5.model_dump()))
+
+    def _parse_policy(self, raw: str) -> SafetyPolicy | None:
+        match = self.result_pattern.search(raw)
+        if not match:
+            return None
+        try:
+            return SafetyPolicy.model_validate_json(match.group(2).strip())
+        except Exception:
+            return None
+
+    def _build_policy_convo(
+        self, post: Post, category: SafetyPolicyCategory, system_prompt: str
+    ) -> Conversation:
+        content = _strip_thinking_restrictions(system_prompt)
+        convo = Conversation(conversation_id=uuid.uuid4().hex)
+        convo.messages.append(Message(role=Role.SYSTEM, content=[content]))
+        user_msg = Message(role=Role.USER, content=[])
+        user_msg.content.extend(UserRenderer.render(post.user))
+        user_msg.content.extend(PostRenderer.render(post, include_reply_to=True))
+        user_msg.content.append(
+            f"\n\nAnalyze the post {post.id} for the specific safety policy violation category: {category.value}"
+        )
+        user_msg.content.append(
+            f"\n\nProvide the requested JSON object for the specific safety policy type.{THINKING_CONTROL_START}"
+        )
+        convo.messages.append(user_msg)
+        convo.messages.append(Message(role=Role.ASSISTANT, content=[]))
+        return convo
+
+    async def validate(
+        self, category: SafetyPolicyCategory, post: Post, policy: SafetyPolicy | None
+    ) -> SafetyPolicy | None:
+        if policy is None or policy.policyType == SafetyPolicyType.NoViolation:
+            return policy
+        if category == SafetyPolicyCategory.ChildSafety:
+            return await self._validate_child_safety(post, policy)
+        if category == SafetyPolicyCategory.ViolentMedia:
+            return await self._validate_violent_media(post, policy)
+        if category == SafetyPolicyCategory.IllegalAndRegulatedBehaviors:
+            return await self._validate_illegal_and_regulated_behaviors(post, policy)
+        return policy
+
+    async def _validate_child_safety(
+        self, post: Post, policy: SafetyPolicy
+    ) -> SafetyPolicy:
+        metric = "safety_ptos.child_safety_cross_model_validate_with_grok_4_5"
+        post_creation_time = (
+            post.created_at if post.created_at else datetime.now()
+        ).strftime("%Y-%m-%d")
+        convo = self._build_policy_convo(
+            post,
+            SafetyPolicyCategory.ChildSafety,
+            child_safety_policy_prompt(post_creation_time),
+        )
+        try:
+            async with _eapi_4_5_x_algo_breaker.guard():
+                raw = await self.eapi_4_5_x_algo.sample(
+                    convo.interleaveToEapi(), conversation_id=convo.conversation_id
+                )
+            confirm = self._parse_policy(raw)
+            if confirm is None:
+                logger.error(
+                    f"child_safety cross_validate unparseable post={post.id} primary={policy.policyType.value} "
+                    f"conversation_id={convo.conversation_id} raw={raw[:500]!r}"
+                )
+                Metrics.counter(metric).add(1, attributes={"outcome": "unparseable"})
+                return _policy_no_violation("child_safety_grok_4_5_parse_error")
+            if confirm.policyType == policy.policyType:
+                logger.info(
+                    f"child_safety cross_validate agreed post={post.id} policy={policy.policyType.value} "
+                    f"conversation_id={convo.conversation_id}"
+                )
+                Metrics.counter(metric).add(1, attributes={"outcome": "agreed"})
+                return policy
+            logger.info(
+                f"child_safety cross_validate disagreed post={post.id} primary={policy.policyType.value} "
+                f"confirm={confirm.policyType.value} conversation_id={convo.conversation_id}"
+            )
+            Metrics.counter(metric).add(1, attributes={"outcome": "disagreed"})
+            return _policy_no_violation("child_safety_grok_4_5_disagreed")
+        except Exception:
+            logger.error(
+                f"child_safety cross_validate failed post={post.id} primary={policy.policyType.value} "
+                f"conversation_id={convo.conversation_id}: {traceback.format_exc()}"
+            )
+            Metrics.counter(metric).add(1, attributes={"outcome": "error"})
+            return _policy_no_violation("child_safety_grok_4_5_sample_error")
+
+    async def _validate_violent_media(
+        self, post: Post, policy: SafetyPolicy
+    ) -> SafetyPolicy:
+        metric = "safety_ptos.violent_media_cross_model_validate_with_grok_4_5"
+        convo = self._build_policy_convo(
+            post, SafetyPolicyCategory.ViolentMedia, violent_media_policy_prompt()
+        )
+        try:
+            async with _eapi_4_5_x_algo_breaker.guard():
+                raw = await self.eapi_4_5_x_algo.sample(
+                    convo.interleaveToEapi(), conversation_id=convo.conversation_id
+                )
+            confirm = self._parse_policy(raw)
+            if confirm is None:
+                logger.error(
+                    f"violent_media cross_validate unparseable post={post.id} primary={policy.policyType.value} "
+                    f"conversation_id={convo.conversation_id} raw={raw[:500]!r}"
+                )
+                Metrics.counter(metric).add(1, attributes={"outcome": "unparseable"})
+                return _policy_with_type(
+                    SafetyPolicyType.ViolentMediaGraphicMedia,
+                    policy,
+                    f"violent_media_grok_4_5_parse_error: downgraded from {policy.policyType.value}",
+                )
+            if confirm.policyType == policy.policyType:
+                logger.info(
+                    f"violent_media cross_validate agreed post={post.id} policy={policy.policyType.value} "
+                    f"conversation_id={convo.conversation_id}"
+                )
+                Metrics.counter(metric).add(1, attributes={"outcome": "agreed"})
+                return policy
+            if confirm.policyType == SafetyPolicyType.NoViolation:
+                logger.info(
+                    f"violent_media cross_validate no_violation post={post.id} primary={policy.policyType.value} "
+                    f"conversation_id={convo.conversation_id}"
+                )
+                Metrics.counter(metric).add(1, attributes={"outcome": "no_violation"})
+                return _policy_no_violation("violent_media_grok_4_5_no_violation")
+            logger.info(
+                f"violent_media cross_validate type_mismatch post={post.id} primary={policy.policyType.value} "
+                f"confirm={confirm.policyType.value} conversation_id={convo.conversation_id}"
+            )
+            Metrics.counter(metric).add(1, attributes={"outcome": "type_mismatch"})
+            return _policy_with_type(
+                SafetyPolicyType.ViolentMediaGraphicMedia,
+                policy,
+                f"violent_media_grok_4_5_type_mismatch: downgraded from {policy.policyType.value}, cv={confirm.policyType.value}",
+            )
+        except Exception:
+            logger.error(
+                f"violent_media cross_validate failed post={post.id} primary={policy.policyType.value} "
+                f"conversation_id={convo.conversation_id}: {traceback.format_exc()}"
+            )
+            Metrics.counter(metric).add(1, attributes={"outcome": "error"})
+            return _policy_with_type(
+                SafetyPolicyType.ViolentMediaGraphicMedia,
+                policy,
+                f"violent_media_grok_4_5_sample_error: downgraded from {policy.policyType.value}",
+            )
+
+    async def _validate_illegal_and_regulated_behaviors(
+        self, post: Post, policy: SafetyPolicy
+    ) -> SafetyPolicy:
+        metric = "safety_ptos.illegal_and_regulated_behaviors_cross_model_validate_with_grok_4_5"
+        convo = self._build_policy_convo(
+            post,
+            SafetyPolicyCategory.IllegalAndRegulatedBehaviors,
+            illegal_and_regulated_behaviors_policy_prompt(),
+        )
+        try:
+            async with _eapi_4_5_x_algo_breaker.guard():
+                raw = await self.eapi_4_5_x_algo.sample(
+                    convo.interleaveToEapi(), conversation_id=convo.conversation_id
+                )
+            confirm = self._parse_policy(raw)
+            if confirm is None:
+                logger.error(
+                    f"illegal_and_regulated_behaviors cross_validate unparseable post={post.id} "
+                    f"primary={policy.policyType.value} conversation_id={convo.conversation_id} raw={raw[:500]!r}"
+                )
+                Metrics.counter(metric).add(1, attributes={"outcome": "unparseable"})
+                return _policy_no_violation(
+                    "illegal_and_regulated_behaviors_grok_4_5_parse_error"
+                )
+            if confirm.policyType == policy.policyType:
+                logger.info(
+                    f"illegal_and_regulated_behaviors cross_validate agreed post={post.id} "
+                    f"policy={policy.policyType.value} conversation_id={convo.conversation_id}"
+                )
+                Metrics.counter(metric).add(1, attributes={"outcome": "agreed"})
+                return _policy_with_type(
+                    policy.policyType, policy, confirm.reason or policy.reason
+                )
+            logger.info(
+                f"illegal_and_regulated_behaviors cross_validate disagreed post={post.id} "
+                f"primary={policy.policyType.value} confirm={confirm.policyType.value} "
+                f"conversation_id={convo.conversation_id}"
+            )
+            Metrics.counter(metric).add(1, attributes={"outcome": "disagreed"})
+            return _policy_no_violation(
+                confirm.reason
+                or f"illegal_and_regulated_behaviors_grok_4_5_disagreed: cv={confirm.policyType.value}"
+            )
+        except Exception:
+            logger.error(
+                f"illegal_and_regulated_behaviors cross_validate failed post={post.id} "
+                f"primary={policy.policyType.value} conversation_id={convo.conversation_id}: {traceback.format_exc()}"
+            )
+            Metrics.counter(metric).add(1, attributes={"outcome": "error"})
+            return _policy_no_violation(
+                "illegal_and_regulated_behaviors_grok_4_5_sample_error"
+            )
+
+
 class SafetyPtosChildSafetyPolicyClassifier:
     result_pattern = re.compile(r"(.*)<json>(.*)</json>", re.DOTALL)
 
     def __init__(self, gemma_model_name: str = GEMMA):
         self.oai_gemma4 = OaiSampler(grox_config.get_oai_model(gemma_model_name))
-        eapi_cfg_4_6 = grox_config.get_eapi_model(ModelName.EAPI_GROK_4_6_INTERNAL)
-        self.eapi_4_6_internal = EapiSampler(
-            EapiModelConfig(**eapi_cfg_4_6.model_dump())
-        )
 
     def build_convo(self, post: Post) -> Conversation:
         post_creation_time = (
@@ -216,10 +432,6 @@ class SafetyPtosChildSafetyPolicyClassifier:
         convo.messages.append(Message(role=Role.ASSISTANT, content=[]))
         return convo
 
-    @staticmethod
-    def _no_violation(reason: str) -> SafetyPolicy:
-        return SafetyPolicy(policyType=SafetyPolicyType.NoViolation, reason=reason)
-
     def _parse_policy(self, raw: str) -> SafetyPolicy | None:
         match = self.result_pattern.search(raw)
         if not match:
@@ -242,7 +454,7 @@ class SafetyPtosChildSafetyPolicyClassifier:
             Metrics.counter("safety_ptos.child_safety_policy.count").add(
                 1, attributes={"outcome": "gemma_error"}
             )
-            return self._no_violation("child_safety_gemma_sample_error")
+            return _policy_no_violation("child_safety_gemma_sample_error")
 
         policy = self._parse_policy(raw)
         if policy is None:
@@ -252,49 +464,8 @@ class SafetyPtosChildSafetyPolicyClassifier:
             Metrics.counter("safety_ptos.child_safety_policy.count").add(
                 1, attributes={"outcome": "gemma_unparseable"}
             )
-            return self._no_violation("child_safety_gemma_parse_error")
-
-        if policy.policyType == SafetyPolicyType.NoViolation:
-            return policy
-        return await self._cross_model_validate_with_4_5(convo, policy, post_id=post.id)
-
-    async def _cross_model_validate_with_4_5(
-        self, convo: Conversation, policy: SafetyPolicy, post_id: str
-    ) -> SafetyPolicy:
-        metric = "safety_ptos.child_safety_cross_model_validate_with_grok_4_5"
-        try:
-            async with _eapi_4_6_internal_breaker.guard():
-                raw = await self.eapi_4_6_internal.sample(
-                    convo.interleaveToEapi(), conversation_id=convo.conversation_id
-                )
-            confirm = self._parse_policy(raw)
-            if confirm is None:
-                logger.error(
-                    f"child_safety cross_validate_4_5 unparseable post={post_id} primary={policy.policyType.value} "
-                    f"conversation_id={convo.conversation_id} raw={raw[:500]!r}"
-                )
-                Metrics.counter(metric).add(1, attributes={"outcome": "unparseable"})
-                return self._no_violation("child_safety_grok_4_5_parse_error")
-            if confirm.policyType == policy.policyType:
-                logger.info(
-                    f"child_safety cross_validate_4_5 agreed post={post_id} policy={policy.policyType.value} "
-                    f"conversation_id={convo.conversation_id}"
-                )
-                Metrics.counter(metric).add(1, attributes={"outcome": "agreed"})
-                return policy
-            logger.info(
-                f"child_safety cross_validate_4_5 disagreed post={post_id} primary={policy.policyType.value} "
-                f"confirm={confirm.policyType.value} conversation_id={convo.conversation_id}, clearing to NoViolation"
-            )
-            Metrics.counter(metric).add(1, attributes={"outcome": "disagreed"})
-            return self._no_violation("child_safety_grok_4_5_disagreed")
-        except Exception:
-            logger.error(
-                f"child_safety cross_validate_4_5 failed post={post_id} primary={policy.policyType.value} "
-                f"conversation_id={convo.conversation_id}: {traceback.format_exc()}"
-            )
-            Metrics.counter(metric).add(1, attributes={"outcome": "error"})
-            return self._no_violation("child_safety_grok_4_5_sample_error")
+            return _policy_no_violation("child_safety_gemma_parse_error")
+        return policy
 
 
 class SafetyPtosPolicyClassifier:

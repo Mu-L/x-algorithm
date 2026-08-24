@@ -92,6 +92,8 @@ class PostRenderer:
             res.extend(post.list_metadata.to_convo())
         if post.chat_group_metadata:
             res.extend(post.chat_group_metadata.to_convo())
+        if post.space_metadata:
+            res.extend(post.space_metadata.to_convo())
         if post.quoted_post:
             res.append(
                 f"\n\n{indent_str}This Post quotes Post {post.quoted_post.id}\n\n"

@@ -412,8 +412,9 @@ pub fn build_mtls_connector(
     use tokio_rustls::client::TlsConnector;
     use tokio_rustls::rustls::{client::ClientConfig, RootCertStore};
 
-    let _ =
-        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
+    let _ = rustls::crypto::CryptoProvider::install_default(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    );
 
     let mut roots = RootCertStore::empty();
     for cert in load_certs(ca_cert_path)? {
@@ -483,7 +484,7 @@ impl ChainVerifyingSkipNameVerifier {
     fn new(roots: Arc<rustls::RootCertStore>) -> Result<Self> {
         let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
             roots,
-            Arc::new(rustls::crypto::ring::default_provider()),
+            Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
         )
         .build()
         .map_err(|e| TwemcacheError::Io(format!("build server cert verifier: {e}")))?;

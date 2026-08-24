@@ -15,6 +15,7 @@ from grox.flows.ptos.state import (
 from grox.flows.ptos.classifier import (
     SafetyPtosChildSafetyPolicyClassifier,
     SafetyPtosPolicyClassifier,
+    SafetyPtosPolicyCrossValidator,
 )
 from grox.config.config import ModelName
 from grox.flows.ptos.mode import SafetyPtosMode
@@ -28,6 +29,7 @@ class TaskSafetyPtosPolicyDetection(TaskWithPost):
     child_safety_classifier = SafetyPtosChildSafetyPolicyClassifier(
         gemma_model_name=GEMMA
     )
+    cross_validator = SafetyPtosPolicyCrossValidator()
 
     classifiers = {
         SafetyPtosMode.STANDARD: SafetyPtosPolicyClassifier(
@@ -91,8 +93,16 @@ class TaskSafetyPtosPolicyDetection(TaskWithPost):
                     reason="post was previously flagged nsfw by ptos",
                 )
             elif violation.category == SafetyPolicyCategory.ChildSafety:
-                violation.safetyPolicy = (
-                    await cls.child_safety_classifier.classify_policy(post)
+                policy = await cls.child_safety_classifier.classify_policy(post)
+                violation.safetyPolicy = await cls.cross_validator.validate(
+                    violation.category, post, policy
+                )
+            elif violation.category == SafetyPolicyCategory.ViolentMedia:
+                policy = await active_classifier.classify_policy_for_violation(
+                    post, violation
+                )
+                violation.safetyPolicy = await cls.cross_validator.validate(
+                    violation.category, post, policy
                 )
             else:
                 violation.safetyPolicy = (

@@ -9,22 +9,27 @@ pub enum BrandSafetyVerdict {
     Safe = 1,
     LowRisk = 2,
     MediumRisk = 3,
+    HighRisk = 4,
 }
 
-pub(crate) const MEDIUM_RISK_LABELS: &[SafetyLabelType] = &[
+pub(crate) const HIGH_RISK_LABELS: &[SafetyLabelType] = &[
     SafetyLabelType::NSFW_HIGH_PRECISION,
     SafetyLabelType::NSFW_HIGH_RECALL,
+    SafetyLabelType::GORE_AND_VIOLENCE_HIGH_PRECISION,
+    SafetyLabelType::PDNA,
+    SafetyLabelType::EGREGIOUS_NSFW,
+    SafetyLabelType::SOFT_NSFW,
+];
+
+pub(crate) const MEDIUM_RISK_LABELS: &[SafetyLabelType] = &[
     SafetyLabelType::NSFA_HIGH_PRECISION,
     SafetyLabelType::NSFA_KEYWORDS_HIGH_PRECISION,
-    SafetyLabelType::GORE_AND_VIOLENCE_HIGH_PRECISION,
     SafetyLabelType::NSFW_REPORTED_HEURISTICS,
     SafetyLabelType::GORE_AND_VIOLENCE_REPORTED_HEURISTICS,
     SafetyLabelType::NSFW_CARD_IMAGE,
     SafetyLabelType::DO_NOT_AMPLIFY,
     SafetyLabelType::MALICIOUS_URL,
     SafetyLabelType::NSFA_COMMUNITY_NOTE,
-    SafetyLabelType::PDNA,
-    SafetyLabelType::EGREGIOUS_NSFW,
     SafetyLabelType::GROK_NSFA,
     SafetyLabelType::NSFW_TEXT,
 ];
@@ -41,6 +46,10 @@ pub fn compute_verdict(
     labels: &HashMap<SafetyLabelType, SafetyLabel>,
     tweet_id: u64,
 ) -> BrandSafetyVerdict {
+    if HIGH_RISK_LABELS.iter().any(|l| labels.contains_key(l)) {
+        return BrandSafetyVerdict::HighRisk;
+    }
+
     if MEDIUM_RISK_LABELS.iter().any(|l| labels.contains_key(l)) {
         return BrandSafetyVerdict::MediumRisk;
     }
@@ -63,18 +72,13 @@ pub fn compute_verdict(
 }
 
 pub(crate) const MEDIUM_RISK_LABELS_V2: &[SafetyLabelType] = &[
-    SafetyLabelType::NSFW_HIGH_PRECISION,
-    SafetyLabelType::NSFW_HIGH_RECALL,
     SafetyLabelType::NSFA_KEYWORDS_HIGH_PRECISION,
-    SafetyLabelType::GORE_AND_VIOLENCE_HIGH_PRECISION,
     SafetyLabelType::NSFW_REPORTED_HEURISTICS,
     SafetyLabelType::GORE_AND_VIOLENCE_REPORTED_HEURISTICS,
     SafetyLabelType::NSFW_CARD_IMAGE,
     SafetyLabelType::DO_NOT_AMPLIFY,
     SafetyLabelType::MALICIOUS_URL,
     SafetyLabelType::NSFA_COMMUNITY_NOTE,
-    SafetyLabelType::PDNA,
-    SafetyLabelType::EGREGIOUS_NSFW,
     SafetyLabelType::GROK_NSFA_V2,
     SafetyLabelType::GROK_NSFA_EXPANDED_V2,
     SafetyLabelType::NSFW_TEXT,
@@ -98,6 +102,9 @@ pub(crate) fn compute_verdict_v2(
 ) -> BrandSafetyVerdict {
     if !V2_WRITTEN_LABELS.iter().any(|l| labels.contains_key(l)) {
         return compute_verdict(labels, tweet_id);
+    }
+    if HIGH_RISK_LABELS.iter().any(|l| labels.contains_key(l)) {
+        return BrandSafetyVerdict::HighRisk;
     }
     if MEDIUM_RISK_LABELS_V2.iter().any(|l| labels.contains_key(l)) {
         return BrandSafetyVerdict::MediumRisk;
@@ -175,14 +182,14 @@ mod tests {
     }
 
     #[test]
-    fn medium_risk_with_nsfw_label() {
+    fn high_risk_with_nsfw_label() {
         let labels = labels_with(&[
             SafetyLabelType::GROK_SFA,
             SafetyLabelType::NSFW_HIGH_PRECISION,
         ]);
         assert_eq!(
             compute_verdict(&labels, PRE_CUTOFF_ID),
-            BrandSafetyVerdict::MediumRisk
+            BrandSafetyVerdict::HighRisk
         );
     }
 
@@ -232,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn medium_risk_trumps_low_risk() {
+    fn high_risk_trumps_low_risk() {
         let labels = labels_with(&[
             SafetyLabelType::GROK_SFA,
             SafetyLabelType::NSFA_LIMITED_INVENTORY,
@@ -240,7 +247,7 @@ mod tests {
         ]);
         assert_eq!(
             compute_verdict(&labels, PRE_CUTOFF_ID),
-            BrandSafetyVerdict::MediumRisk
+            BrandSafetyVerdict::HighRisk
         );
     }
 

@@ -599,6 +599,22 @@ class ChatGroupMetadata(BaseModel):
         return res
 
 
+class SpaceMetadata(BaseModel):
+    title: str | None = None
+
+    @classmethod
+    def from_thrift_model(cls, metadata: t.SpaceMetadata) -> "SpaceMetadata":
+        return cls(title=metadata.title)
+
+    def to_convo(self) -> list[str]:
+        if not self.title:
+            return []
+        return [
+            "\n\nThis post has the following audio space card attached:",
+            f"\nAudio Space title: {self.title}",
+        ]
+
+
 class ArticleMetadata(BaseModel):
     title: str | None = None
     media: list[Image | Video] | None = None
@@ -679,6 +695,7 @@ class Post(BaseModel):
     safety_labels: list[str] | None = None
     list_metadata: ListMetadata | None = None
     chat_group_metadata: ChatGroupMetadata | None = None
+    space_metadata: SpaceMetadata | None = None
 
     def get_images(self) -> list[Image]:
         images: list[Image] = []
@@ -788,6 +805,12 @@ class Post(BaseModel):
             )
         else:
             chat_group_metadata = None
+        if post_metadata.spaceMetadata:
+            space_metadata = SpaceMetadata.from_thrift_model(
+                post_metadata.spaceMetadata
+            )
+        else:
+            space_metadata = None
 
         return cls(
             id=str(post_metadata.postId),
@@ -822,6 +845,7 @@ class Post(BaseModel):
             else None,
             list_metadata=list_metadata,
             chat_group_metadata=chat_group_metadata,
+            space_metadata=space_metadata,
         )
 
     @classmethod

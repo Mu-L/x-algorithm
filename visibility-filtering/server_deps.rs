@@ -4,6 +4,7 @@ use crate::filter_tweets::FilterTweetsEndpoint;
 use crate::get_safety_labels::GetSafetyLabelsEndpoint;
 use crate::hydration::{FallbackCacheMode, HydrationPipeline};
 use crate::models::{RawCandidate, TweetId};
+use crate::reference_compare::ReferenceCompareHarness;
 use crate::rules::{SafetyLevel, Verdict};
 use crate::safety_label_source::lookup::RemoteSource;
 use crate::safety_label_source::manhattan::ManhattanSource;
@@ -18,6 +19,7 @@ use xai_core_entities::gizmoduck_client::{GizmoduckClientConfig, ProdGizmoduckCl
 use xai_core_entities::rpc_constants::{GizmoduckRpcConstants, RpcConstants, TESRpcConstants};
 use xai_core_entities::s2s::{S2S_CHAIN_PATH, S2S_CRT_PATH, S2S_KEY_PATH};
 use xai_core_entities::tweet_entity_service_client::{ProdTESClient, TESClientConfig};
+use xai_visibility_filtering::vf_client::{StratoVfClient, VfClient};
 use xai_x_rpc::balanced_channel::LbPolicy;
 
 const CACHE_PATH: &str = "/s/cache/safety_label_store:twemcaches";
@@ -190,6 +192,8 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
     );
     info!("Cache client connected to {CACHE_PATH}");
 
+    let reference_compare = build_reference_compare_harness(datacenter, init_deadline).await;
+
     warm_cache(&twemcache).await;
     warm_manhattan(mh_label_client.as_ref()).await;
 
@@ -222,9 +226,47 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
     );
 
     VFServer::from_endpoints(
-        FilterTweetsEndpoint::new(filter_tweets),
+        FilterTweetsEndpoint::new(filter_tweets, reference_compare),
         GetSafetyLabelsEndpoint::new(safety_label_source),
     )
+}
+
+async fn build_reference_compare_harness(
+    datacenter: &str,
+    init_deadline: tokio::time::Instant,
+) -> Option<Arc<ReferenceCompareHarness>> {
+    let should_build = crate::reference_compare::should_build_harness(
+        crate::config::dual_call_harness_enabled(),
+        std::env::var("APP_ENV").ok().as_deref(),
+    )
+    .unwrap_or_else(|misconfiguration| panic!("{misconfiguration}"));
+    if !should_build {
+        return None;
+    }
+
+    let client_id = format!(
+        "visibility-filtering-service.{}",
+        std::env::var("APP_ENV").unwrap_or_else(|_| "staging".to_string())
+    );
+    let strato: Arc<dyn VfClient + Send + Sync> = Arc::new(
+        init_client_with_retry("strato_vf", init_deadline, || {
+            let client_id = client_id.clone();
+            async move {
+                StratoVfClient::new(
+                    S2S_CHAIN_PATH.clone(),
+                    S2S_CRT_PATH.clone(),
+                    S2S_KEY_PATH.clone(),
+                    client_id,
+                    datacenter.to_string(),
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+        })
+        .await
+        .expect("Failed to initialize Strato VF client (reference comparator)"),
+    );
+    Some(Arc::new(ReferenceCompareHarness::new(strato, datacenter)))
 }
 
 const TES_STRATO_REQUEST_TIMEOUT_MS: u64 = 100;
@@ -364,6 +406,13 @@ mod tests {
 
     fn deadline_in(budget: Duration) -> tokio::time::Instant {
         tokio::time::Instant::now() + budget
+    }
+
+    #[tokio::test]
+    async fn reference_compare_harness_not_built_without_flag() {
+        let harness =
+            build_reference_compare_harness("atla", deadline_in(Duration::from_secs(1))).await;
+        assert!(harness.is_none());
     }
 
     #[tokio::test(start_paused = true)]

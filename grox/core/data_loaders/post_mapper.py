@@ -15,6 +15,7 @@ from strato_http.queries.data_types import (
     ArticleMetadata as StratoArticleMetadata,
     ListMetadata as StratoListMetadata,
     ChatGroupMetadata as StratoChatGroupMetadata,
+    SpaceMetadata as StratoSpaceMetadata,
 )
 from grox.core.data_loaders.data_types import (
     Post,
@@ -35,6 +36,7 @@ from grox.core.data_loaders.data_types import (
     ArticleMetadata,
     ListMetadata,
     ChatGroupMetadata,
+    SpaceMetadata,
     AffiliatedBusiness,
 )
 
@@ -142,6 +144,11 @@ class PostMapper:
                     post_metadata.chatGroupMetadata
                 )
             )
+        space_metadata = None
+        if post_metadata.spaceMetadata:
+            space_metadata = cls._from_strato_space_metadata_to_space_metadata(
+                post_metadata.spaceMetadata
+            )
         return Post(
             id=str(post_metadata.postId),
             user=user,
@@ -163,6 +170,7 @@ class PostMapper:
             article_metadata=article_metadata,
             list_metadata=list_metadata,
             chat_group_metadata=chat_group_metadata,
+            space_metadata=space_metadata,
         )
 
     @classmethod
@@ -294,6 +302,12 @@ class PostMapper:
             if metadata.groupAvatarUrl
             else None,
         )
+
+    @classmethod
+    def _from_strato_space_metadata_to_space_metadata(
+        cls, metadata: StratoSpaceMetadata
+    ) -> SpaceMetadata:
+        return SpaceMetadata(title=metadata.title)
 
     @classmethod
     def _from_strato_poll_card_metadata_to_poll_card(

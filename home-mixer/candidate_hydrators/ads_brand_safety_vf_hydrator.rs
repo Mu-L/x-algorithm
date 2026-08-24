@@ -102,7 +102,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for AdsBrandSafetyVfHydrator {
                 if c.nsfw_author_ads == Some(true) {
                     nsfw_author_seen += 1;
                     let before = verdict;
-                    verdict = worst_verdict(&verdict, &BrandSafetyVerdict::MediumRisk);
+                    verdict = worst_verdict(&verdict, &BrandSafetyVerdict::HighRisk);
                     if verdict != before {
                         nsfw_author_dropped += 1;
                     }
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ancestor_medium_risk_escalates_verdict() {
+    async fn ancestor_high_risk_escalates_verdict() {
         let mut safe_labels: SafetyLabelMap = HashMap::new();
         safe_labels.insert(SafetyLabelType::GROK_SFA, SafetyLabel::default());
         let mut risky_labels: SafetyLabelMap = HashMap::new();
@@ -346,7 +346,7 @@ mod tests {
         let hydrated = results[0].as_ref().unwrap();
         assert_eq!(
             hydrated.brand_safety_verdict,
-            Some(BrandSafetyVerdict::MediumRisk)
+            Some(BrandSafetyVerdict::HighRisk)
         );
         assert!(hydrated
             .safety_labels
@@ -503,7 +503,7 @@ mod tests {
         let hydrated = results[0].as_ref().unwrap();
         assert_eq!(
             hydrated.brand_safety_verdict,
-            Some(BrandSafetyVerdict::MediumRisk)
+            Some(BrandSafetyVerdict::HighRisk)
         );
     }
 
