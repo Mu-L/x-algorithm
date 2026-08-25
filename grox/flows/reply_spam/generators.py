@@ -28,7 +28,7 @@ class ReplyRankingTaskGenerator(StreamTaskGenerator):
 @register
 class ReplyRankingRecoveryTaskGenerator(StreamTaskGenerator):
     TASK_GENERATOR_TYPE = REPLY_RANKING_RECOVERY
-    PLANS_TO_INJECT = {PlanReplyRanking.KEY}
+    PLANS_TO_INJECT = {PlanReplyRanking.KEY, PlanSpamComment.KEY}
 
     def _get_loader(self):
         return KafkaPostLoader(TOPIC_REPLY_RANKING_RECOVERY)

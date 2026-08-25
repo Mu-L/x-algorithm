@@ -260,6 +260,20 @@ def build1FavTopicIndex(candidate: PhoenixRankAllCandidate, stats: Stats.StatsRe
   buildTopicIndexWithTopics(candidate, stats, 5, postBased50PctTopics)
 }
 
+def build1FavVideoIndex(candidate: PhoenixRankAllCandidate, stats: Stats.StatsReceiver): Unit = {
+  candidate.tweetMedadata match {
+    case Some(tweet) if eventProcessing.hasValidImmersiveVideo(tweet) =>
+      val object = {
+        postId = candidate.postId,
+        authorId = candidate.authorId,
+        indexName = "1fav_video"
+      }
+      #<hydra/kafka/indexingEventKafkaTopic>.insert((), object)
+      stats.counter("1fav_video_indexing_event_created").incr(1)
+    case _ => ()
+  }
+}
+
 def buildPostCreationIndex(candidate: PhoenixRankAllCandidate, stats: Stats.StatsReceiver): Unit = {
   val object = {
     postId = candidate.postId,
@@ -452,6 +466,7 @@ val executeOp = Op.execute({ idempotent = true })[PhoenixRankAllIndexingRequest,
                   build32FavIndex(candidate, receiverStats)
                   if(hasImmersiveVideo) {
                     buildVideoIndex(candidate, receiverStats)
+                    build1FavVideoIndex(candidate, receiverStats)
                     buildImagineIndex(candidate, receiverStats)
                   }
                   buildMetadataDump(candidate, receiverStats)

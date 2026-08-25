@@ -6,6 +6,7 @@ pub mod conversation_gap_ancestor_hydrator;
 pub mod core_data_candidate_hydrator;
 pub mod engagement_counts_hydrator;
 pub mod filtered_topics_hydrator;
+pub mod following_blocked_by_hydrator;
 pub mod following_replied_users_hydrator;
 pub mod gizmoduck_hydrator;
 pub mod in_network_candidate_hydrator;

@@ -1,17 +1,34 @@
 use std::sync::Arc;
-use tonic::async_trait;
+use std::time::Duration;
+
+use anyhow::Context;
+use envoy_types::pb::envoy::config::core::v3::Node;
+use envoy_types::pb::envoy::config::listener::v3::Listener;
+use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_client::AggregatedDiscoveryServiceClient;
+use envoy_types::pb::envoy::service::discovery::v3::DiscoveryRequest;
+use prost::Message;
 use tower::util::Either;
 use tracing::info;
 
+use tonic::transport::Channel;
 use xai_dark_traffic::{DarkTrafficLayer, ReloadableDarkTrafficConfigBuilder};
-use xai_x_rpc::dynamic_channel_manager::{DynamicChannelManager, EndpointDiscovery, EndpointInfo};
+use xai_x_rpc::dynamic_channel_manager::{
+    ChannelFactory, DynamicChannelManager, EndpointDiscovery, EndpointInfo,
+};
 use xai_x_rpc::grpc_client::TlsMode;
 use xai_x_rpc::xds_channel_factory::XdsChannelFactory;
 
 const CONFIG_PATH: &str = "/config/dark-traffic/dark_traffic.yaml";
-pub const STAGING_XDS_DEST: &str = "xai-vf-service.staging.visibility:grpc";
 
-const FORWARDER_NAME: &str = "staging";
+pub const STAGING_NAMESPACE: &str = "visibility";
+pub const STAGING_APP_ENV: &str = "staging";
+pub const STAGING_PORT_ID: &str = "grpc";
+pub const STAGING_WORKLOAD_PREFIX: &str = "xai-vf-service";
+
+const LISTENER_TYPE_URL: &str = "type.googleapis.com/envoy.config.listener.v3.Listener";
+const LDS_MAX_DECODING_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
+const LDS_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const CHANNEL_CREATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn staging_tls_domain(dc: &str) -> String {
     format!("visibility.visibility-filtering-service.staging.{dc}.s2s.twttr.net")
@@ -19,15 +36,115 @@ pub fn staging_tls_domain(dc: &str) -> String {
 
 pub type DarkLayer = Either<DarkTrafficLayer, tower::layer::util::Identity>;
 
-struct StaticStagingDiscovery;
+pub fn parse_staging_listener(listener_name: &str) -> Option<EndpointInfo> {
+    let dest = listener_name.rsplit('/').next().unwrap_or(listener_name);
+    let dest = dest.split('?').next().unwrap_or(dest);
+    let suffix = format!(".{STAGING_APP_ENV}.{STAGING_NAMESPACE}:{STAGING_PORT_ID}");
+    let workload = dest.strip_suffix(suffix.as_str())?;
+    if !workload.starts_with(STAGING_WORKLOAD_PREFIX) || workload.contains('.') {
+        return None;
+    }
+    Some(EndpointInfo {
+        name: workload.to_string(),
+        xds_dest: dest.to_string(),
+    })
+}
 
-#[async_trait]
-impl EndpointDiscovery for StaticStagingDiscovery {
+struct XdsStagingDiscovery {
+    server_uri: String,
+}
+
+#[async_trait::async_trait]
+impl EndpointDiscovery for XdsStagingDiscovery {
     async fn discover(&self) -> anyhow::Result<Vec<EndpointInfo>> {
-        Ok(vec![EndpointInfo {
-            name: FORWARDER_NAME.to_string(),
-            xds_dest: STAGING_XDS_DEST.to_string(),
-        }])
+        tokio::time::timeout(LDS_RESPONSE_TIMEOUT, self.fetch())
+            .await
+            .context("wildcard LDS exchange timed out")?
+    }
+}
+
+impl XdsStagingDiscovery {
+    async fn fetch(&self) -> anyhow::Result<Vec<EndpointInfo>> {
+        let channel = tonic::transport::Endpoint::from_shared(self.server_uri.clone())
+            .context("invalid kube-discovery URI")?
+            .connect()
+            .await
+            .context("failed to connect to kube-discovery")?;
+
+        let mut client = AggregatedDiscoveryServiceClient::new(channel)
+            .max_decoding_message_size(LDS_MAX_DECODING_MESSAGE_SIZE);
+
+        let request = DiscoveryRequest {
+            type_url: LISTENER_TYPE_URL.to_string(),
+            resource_names: vec!["*".to_string()],
+            node: Some(Node {
+                id: format!("{STAGING_WORKLOAD_PREFIX}-dark-traffic"),
+                cluster: STAGING_NAMESPACE.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        use futures::StreamExt;
+        let requests = futures::stream::iter([request]).chain(futures::stream::pending());
+        let mut stream = client
+            .stream_aggregated_resources(requests)
+            .await
+            .context("wildcard LDS stream failed to open")?
+            .into_inner();
+
+        let response = loop {
+            let response = stream
+                .message()
+                .await
+                .context("wildcard LDS stream errored")?
+                .context("wildcard LDS stream ended without a listener-carrying response")?;
+            if !response.resources.is_empty() {
+                break response;
+            }
+        };
+
+        let names: Vec<String> = response
+            .resources
+            .iter()
+            .filter_map(|any| Some(Listener::decode(any.value.as_ref()).ok()?.name))
+            .collect();
+        anyhow::ensure!(
+            !names.is_empty(),
+            "none of {} LDS resources decoded as Listener",
+            response.resources.len()
+        );
+        let endpoints: Vec<EndpointInfo> = names
+            .iter()
+            .filter_map(|name| parse_staging_listener(name))
+            .collect();
+
+        if endpoints.is_empty() {
+            tracing::warn!(
+                listeners = names.len(),
+                "dark_traffic: no staging listeners matched"
+            );
+        } else {
+            info!(
+                names = %endpoints.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", "),
+                "dark_traffic: discovery complete"
+            );
+        }
+
+        Ok(endpoints)
+    }
+}
+
+struct TimeoutChannelFactory {
+    inner: XdsChannelFactory,
+}
+
+#[async_trait::async_trait]
+impl ChannelFactory for TimeoutChannelFactory {
+    async fn create_channel(&self, ep: &EndpointInfo) -> anyhow::Result<Channel> {
+        tokio::time::timeout(CHANNEL_CREATE_TIMEOUT, self.inner.create_channel(ep))
+            .await
+            .with_context(|| format!("channel dial timed out for {}", ep.xds_dest))?
     }
 }
 
@@ -56,6 +173,9 @@ pub fn resolve_layer() -> DarkLayer {
     }
 
     let dc = std::env::var("DATACENTER").unwrap_or_else(|_| "atla".to_string());
+    let discovery = XdsStagingDiscovery {
+        server_uri: format!("http://frontend.kube-discovery.prod.svc.{dc}.kube.int-x.ai:8082"),
+    };
     let domain = staging_tls_domain(&dc);
     info!(domain, "dark_traffic: enabled");
 
@@ -65,7 +185,10 @@ pub fn resolve_layer() -> DarkLayer {
             .with_domain_override(&domain),
     );
 
-    let channels = DynamicChannelManager::new(Arc::new(factory), Arc::new(StaticStagingDiscovery));
+    let channels = DynamicChannelManager::new(
+        Arc::new(TimeoutChannelFactory { inner: factory }),
+        Arc::new(discovery),
+    );
 
     let config = ReloadableDarkTrafficConfigBuilder::new(CONFIG_PATH)
         .forwarders({
@@ -103,6 +226,7 @@ mod tests {
     #[test]
     fn max_ordinal_threshold() {
         assert!(should_enable(Some(0), Some(3)));
+        assert!(should_enable(Some(1), Some(3)));
         assert!(should_enable(Some(2), Some(3)));
         assert!(!should_enable(Some(3), Some(3)));
         assert!(!should_enable(Some(4), Some(3)));
@@ -111,5 +235,39 @@ mod tests {
     #[test]
     fn max_ordinal_zero_disables_all() {
         assert!(!should_enable(Some(0), Some(0)));
+    }
+
+    #[test]
+    fn parse_accepts_vf_staging_listeners() {
+        for (listener, workload) in [
+            ("xai-vf-service.staging.visibility:grpc", "xai-vf-service"),
+            (
+                "xai-vf-service-user1-foo.staging.visibility:grpc",
+                "xai-vf-service-user1-foo",
+            ),
+            (
+                "xdstp://kube-discovery/envoy.config.listener.v3.Listener/xai-vf-service.staging.visibility:grpc?key=val",
+                "xai-vf-service",
+            ),
+        ] {
+            let ep = parse_staging_listener(listener).expect(listener);
+            assert_eq!(ep.name, workload);
+            assert_eq!(ep.xds_dest, format!("{workload}.staging.visibility:grpc"));
+        }
+    }
+
+    #[test]
+    fn parse_rejects_out_of_scope_listeners() {
+        for name in [
+            "xai-vf-service.prod.visibility:grpc",
+            "other-svc.staging.visibility:grpc",
+            "xai-vf-service.staging.other:grpc",
+            "xai-vf-service.staging.visibility:metrics",
+            "evil.xai-vf-service.staging.visibility:grpc",
+            "xai-vf-service.staging.visibility",
+            "",
+        ] {
+            assert!(parse_staging_listener(name).is_none(), "{name}");
+        }
     }
 }

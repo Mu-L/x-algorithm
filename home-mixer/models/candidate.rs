@@ -24,8 +24,6 @@ pub struct PostCandidate {
     pub slate_context: Option<SlateContext>,
     #[serde(default)]
     pub served_slate_context: Option<SlateContext>,
-    #[serde(default)]
-    pub mpn_parts: Option<MpnParts>,
     #[serde(
         serialize_with = "serialize_served_type",
         deserialize_with = "deserialize_served_type"
@@ -60,6 +58,8 @@ pub struct PostCandidate {
     pub repost_count: Option<i64>,
     pub quote_count: Option<i64>,
     pub view_count: Option<u64>,
+    #[serde(default)]
+    pub view_count_on_home: Option<u64>,
     pub bookmark_count: Option<i64>,
     pub mutual_follow_jaccard: Option<f64>,
     pub is_mutual_follow_author: Option<bool>,
@@ -94,6 +94,8 @@ pub struct SlateContext {
     pub sid_gap_l1: Option<u32>,
     pub sid_gap_l2: Option<u32>,
     pub sid_gap_l3: Option<u32>,
+    #[serde(default)]
+    pub recon_cos_milli: Option<u32>,
 }
 
 impl From<xai_recsys_proto::SlateContext> for SlateContext {
@@ -111,15 +113,9 @@ impl From<xai_recsys_proto::SlateContext> for SlateContext {
             sid_gap_l1: c.sid_gap1,
             sid_gap_l2: c.sid_gap2,
             sid_gap_l3: c.sid_gap3,
+            recon_cos_milli: c.recon_cos_milli,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct MpnParts {
-    pub pos: f64,
-    pub neg: f64,
-    pub scalar_multiplier: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -201,6 +197,7 @@ impl CandidateHelpers for PostCandidate {
                 sid_gap1: c.sid_gap_l1,
                 sid_gap2: c.sid_gap_l2,
                 sid_gap3: c.sid_gap_l3,
+                recon_cos_milli: c.recon_cos_milli,
             }),
             reward_rerank_slot_prob: None,
         }

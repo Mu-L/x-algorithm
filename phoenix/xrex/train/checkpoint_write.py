@@ -84,6 +84,7 @@ def save_checkpoint(
     def _callback(
         elapsed_samples: int = self.elapsed_samples,
         elapsed_tokens: int = self.elapsed_tokens,
+        trainer_step: int = self.step,
     ) -> None:
         if checkpoint_index is not None:
             self.current_ckpt_index = checkpoint_index
@@ -96,6 +97,7 @@ def save_checkpoint(
             elapsed_samples,
             self.current_ckpt_index,
             elapsed_tokens,
+            trainer_step,
             self.checkpoint_config.checkpoint_ttl,
         )
 

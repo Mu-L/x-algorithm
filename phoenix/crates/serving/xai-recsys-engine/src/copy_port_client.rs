@@ -248,7 +248,11 @@ async fn run_downloads(
                 .max(1);
             join_rate_limited(futures, limit, max_c).await
         }
-        _ => Ok(join_all(futures).await),
+        _ => join_all(futures.into_iter().map(tokio::task::spawn))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CopyPortError::Other(format!("copy_port download task join: {e}"))),
     }
 }
 
@@ -268,7 +272,11 @@ async fn join_rate_limited(
             break;
         }
         let batch_size = batch.len();
-        let batch_results = join_all(batch).await;
+        let batch_results = join_all(batch.into_iter().map(tokio::task::spawn))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CopyPortError::Other(format!("copy_port download task join: {e}")))?;
         let failed = batch_results
             .iter()
             .filter(|r| r.0 == TRANSFER_FAILED_SENTINEL)
@@ -1205,6 +1213,151 @@ mod tests {
         );
         let partial = vec![entries[0].clone(), vec![]];
         assert!(choose_prefix(Some("elapsed_samples_1/run"), &partial).is_err());
+    }
+
+    fn tracking_downloads(
+        n: usize,
+        bytes: usize,
+        hold: Duration,
+        in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        starts: std::sync::Arc<std::sync::Mutex<Vec<Option<Instant>>>>,
+    ) -> Vec<TransferFuture> {
+        (0..n)
+            .map(|i| {
+                let in_flight = in_flight.clone();
+                let peak = peak.clone();
+                let starts = starts.clone();
+                Box::pin(async move {
+                    starts.lock().unwrap()[i] = Some(Instant::now());
+                    let cur = in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    peak.fetch_max(cur, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(hold).await;
+                    in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    (bytes, i as u32)
+                }) as TransferFuture
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rate_limit_caps_in_flight_despite_spawn() {
+        let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let starts = std::sync::Arc::new(std::sync::Mutex::new(vec![None; 6]));
+        let futures = tracking_downloads(
+            6,
+            1,
+            Duration::from_millis(80),
+            in_flight,
+            peak.clone(),
+            starts,
+        );
+        let results = join_rate_limited(futures, 1 << 40, 2).await.unwrap();
+        assert_eq!(
+            results.iter().map(|r| r.1).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5],
+            "join_all on JoinHandles must keep submission order"
+        );
+        assert_eq!(peak.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rate_limit_paces_between_spawned_batches() {
+        let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let starts = std::sync::Arc::new(std::sync::Mutex::new(vec![None; 4]));
+        let bytes = 200 * 1024;
+        let rate = 400 * 1024;
+        let t0 = Instant::now();
+        let results = run_downloads(
+            tracking_downloads(
+                4,
+                bytes,
+                Duration::from_millis(20),
+                in_flight,
+                peak.clone(),
+                starts.clone(),
+            ),
+            Some(rate),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        let elapsed = t0.elapsed();
+        assert_eq!(results.len(), 4);
+        assert_eq!(peak.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let starts = starts.lock().unwrap();
+        let s: Vec<Instant> = starts.iter().map(|t| t.expect("started")).collect();
+        let first_batch_start = s[0].min(s[1]);
+        let second_batch_start = s[2].min(s[3]);
+        let between = second_batch_start.saturating_duration_since(first_batch_start);
+        assert!(
+            between >= Duration::from_millis(700),
+            "second batch started {between:?} after the first; expected ~1s pacing sleep"
+        );
+
+        let total_bytes = (4 * bytes) as f64;
+        let min_elapsed = Duration::from_secs_f64(total_bytes / rate as f64 * 0.85);
+        assert!(
+            elapsed >= min_elapsed,
+            "elapsed {elapsed:?} is below the {min_elapsed:?} floor for {total_bytes} bytes at {rate} B/s"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rate_limit_skips_remaining_on_sentinel() {
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let futures: Vec<TransferFuture> = (0..4)
+            .map(|i| {
+                let started = started.clone();
+                Box::pin(async move {
+                    started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if i == 1 {
+                        (TRANSFER_FAILED_SENTINEL, 0)
+                    } else {
+                        (1_000_000, i as u32)
+                    }
+                }) as TransferFuture
+            })
+            .collect();
+        let t0 = Instant::now();
+        let results = join_rate_limited(futures, 1, 2).await.unwrap();
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "must not pace a failed batch"
+        );
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|r| r.0 == TRANSFER_FAILED_SENTINEL));
+        assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn unlimited_path_spawns_all() {
+        let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let starts = std::sync::Arc::new(std::sync::Mutex::new(vec![None; 4]));
+        let results = run_downloads(
+            tracking_downloads(
+                4,
+                1,
+                Duration::from_millis(80),
+                in_flight,
+                peak.clone(),
+                starts,
+            ),
+            Some(0),
+            Some(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(results.len(), 4);
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "rate_limit=0 must ignore max_concurrent and spawn every future"
+        );
     }
 }
 

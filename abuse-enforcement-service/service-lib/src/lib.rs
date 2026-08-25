@@ -7,6 +7,7 @@ pub mod decision;
 pub mod dedup_cache;
 pub mod entities;
 pub mod facts;
+pub mod generic_actions;
 pub mod gizmoduck;
 pub mod gizmoduck_labels;
 pub mod growthbook;
@@ -132,6 +133,7 @@ struct EnforcementCtx {
             rules_cache: Arc<rules::RulesCache>,
     allowlist: Option<allowlist::ManhattanAllowlist>,
             kafka_producer_decisions: Option<Arc<KafkaProducer>>,
+                kafka_producer_decisions_json: Option<Arc<KafkaProducer>>,
 }
 
 struct ScoreResultProcessor {
@@ -167,6 +169,35 @@ fn decision_outcome(
         head: crate::facts::head_label(score).to_owned(),
         fired_heads: summary.map(|s| s.fired_heads.clone()).unwrap_or_default(),
         labels: summary.map(|s| s.labels.clone()).unwrap_or_default(),
+    }
+}
+
+const REQUESTED_ACTIONS_DENIED: &str = "requested_actions_denied";
+
+#[derive(Debug, PartialEq)]
+enum ExpandedDecision {
+    Skip(String),
+    Act(Vec<decision::ActionSpec>),
+}
+
+fn expand_requested_actions_decision(
+    entity_type: EntityType,
+    score_facts: &ScoreFacts,
+    allowlist: &generic_actions::GenericActionAllowlist,
+) -> (ExpandedDecision, Option<String>) {
+    let resolved = generic_actions::resolve_requested_actions(
+        entity_type,
+        &score_facts.requested_actions,
+        allowlist,
+    );
+    let skipped_json = resolved.skipped_info_json();
+    if resolved.specs.is_empty() {
+        (
+            ExpandedDecision::Skip(REQUESTED_ACTIONS_DENIED.into()),
+            skipped_json,
+        )
+    } else {
+        (ExpandedDecision::Act(resolved.specs), skipped_json)
     }
 }
 
@@ -341,20 +372,41 @@ async fn run_enforcement_inner(
         }
     };
 
+    let (decision, mut requested_actions_skipped) = match decision {
+        Decision::ActRequestedActions => expand_requested_actions_decision(
+            facts.entity_type,
+            &facts.score,
+            &ctx.dynamic_config
+                .generic_action_allowlist(facts.entity_type),
+        ),
+        Decision::Skip(reason) => (ExpandedDecision::Skip(reason), None),
+        Decision::Act(specs) => (ExpandedDecision::Act(specs), None),
+    };
+
     match decision {
-        Decision::Skip(reason) => Ok(skip_outcome(reason, dry_run, &facts, score)),
-        Decision::Act(specs) => {
+        ExpandedDecision::Skip(reason) => {
+            let mut outcome = skip_outcome(reason, dry_run, &facts, score);
+            if let Some(json) = requested_actions_skipped {
+                outcome
+                    .info
+                    .insert("requested_actions_skipped".into(), json);
+            }
+            Ok(outcome)
+        }
+        ExpandedDecision::Act(specs) => {
             if !ctx.dynamic_config.try_enforce(facts.entity_type).await {
                 warn!(
                     entity_type = facts.entity_type.as_str(),
                     "max enforcement has been reached; skipping"
                 );
-                return Ok(skip_outcome(
-                    "max_enforcement_reached".into(),
-                    dry_run,
-                    &facts,
-                    score,
-                ));
+                let mut outcome =
+                    skip_outcome("max_enforcement_reached".into(), dry_run, &facts, score);
+                if let Some(json) = requested_actions_skipped.take() {
+                    outcome
+                        .info
+                        .insert("requested_actions_skipped".into(), json);
+                }
+                return Ok(outcome);
             }
 
             let user_id = facts.user_id;
@@ -390,6 +442,15 @@ async fn run_enforcement_inner(
                 .iter()
                 .map(|a| (a.name(), a.metric_label()))
                 .collect();
+
+            additional_info_map.insert(
+                "action_kinds".into(),
+                serde_json::to_string(&uas_action_dims.iter().map(|(a, _)| *a).collect::<Vec<_>>())
+                    .unwrap_or_else(|_| "[]".into()),
+            );
+            if let Some(json) = requested_actions_skipped {
+                additional_info_map.insert("requested_actions_skipped".into(), json);
+            }
 
             enforce_actions(
                 &ctx.ais_client,
@@ -493,6 +554,8 @@ async fn write_dedup_outcome(
 
 const DECISIONS_PRODUCER: &str = "decisions";
 
+const DECISIONS_JSON_PRODUCER: &str = "decisions_json";
+
 pub(crate) const ADMIN_ACTIONS_PRODUCER: &str = "admin_actions";
 
 #[derive(Clone, Default)]
@@ -507,6 +570,10 @@ impl KafkaProducers {
 
             pub fn decisions(&self) -> Option<&Arc<KafkaProducer>> {
         self.get(DECISIONS_PRODUCER)
+    }
+
+            pub fn decisions_json(&self) -> Option<&Arc<KafkaProducer>> {
+        self.get(DECISIONS_JSON_PRODUCER)
     }
 
             pub fn admin_actions(&self) -> Option<&Arc<KafkaProducer>> {
@@ -531,9 +598,32 @@ pub(crate) fn spawn_publish<M: prost::Message>(
     let Some(producer) = producer else {
         return;
     };
-    let key = key();
-    let bytes = record.encode_to_vec();
-    let producer = producer.clone();
+    spawn_send(producer.clone(), sink, key(), record.encode_to_vec());
+}
+
+pub(crate) fn spawn_publish_json<M: serde::Serialize>(
+    producer: Option<&Arc<KafkaProducer>>,
+    sink: &'static str,
+    key: impl FnOnce() -> Vec<u8>,
+    record: &M,
+) {
+    let Some(producer) = producer else {
+        return;
+    };
+    let bytes = match serde_json::to_vec(record) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn!("{sink} JSON encode failed, record dropped: {e}");
+            metrics::KAFKA_PUBLISH_TOTAL
+                .with_label_values(&[sink, "encode_error"])
+                .inc();
+            return;
+        }
+    };
+    spawn_send(producer.clone(), sink, key(), bytes);
+}
+
+fn spawn_send(producer: Arc<KafkaProducer>, sink: &'static str, key: Vec<u8>, bytes: Vec<u8>) {
     tokio::spawn(async move {
         let result = match producer.send_with_key(Some(key.as_slice()), &bytes).await {
             Ok(_) => "ok",
@@ -548,13 +638,16 @@ pub(crate) fn spawn_publish<M: prost::Message>(
     });
 }
 
-fn publish_decision_outcome(
-    producer: Option<&Arc<KafkaProducer>>,
-    outcome: &abuse_proto::DecisionOutcome,
-) {
+fn publish_decision_outcome(ctx: &EnforcementCtx, outcome: &abuse_proto::DecisionOutcome) {
     spawn_publish(
-        producer,
+        ctx.kafka_producer_decisions.as_ref(),
         DECISIONS_PRODUCER,
+        || outcome.entity_id.to_string().into_bytes(),
+        outcome,
+    );
+    spawn_publish_json(
+        ctx.kafka_producer_decisions_json.as_ref(),
+        DECISIONS_JSON_PRODUCER,
         || outcome.entity_id.to_string().into_bytes(),
         outcome,
     );
@@ -566,7 +659,7 @@ async fn run_enforcement(
     source_topic: &str,
 ) -> Result<abuse_proto::DecisionOutcome> {
     let outcome = run_enforcement_inner(ctx, score, source_topic).await?;
-    publish_decision_outcome(ctx.kafka_producer_decisions.as_ref(), &outcome);
+    publish_decision_outcome(ctx, &outcome);
     Ok(outcome)
 }
 
@@ -663,7 +756,7 @@ impl ScoreResultProcessor {
                 ])
                 .inc();
             publish_decision_outcome(
-                self.ctx.kafka_producer_decisions.as_ref(),
+                &self.ctx,
                 &decision_outcome(
                     score,
                     topic,
@@ -716,7 +809,7 @@ impl ScoreResultProcessor {
                     ])
                     .inc();
                 publish_decision_outcome(
-                    self.ctx.kafka_producer_decisions.as_ref(),
+                    &self.ctx,
                     &decision_outcome(score, topic, "dedup_skipped".into(), false, BTreeMap::new()),
                 );
                 return Ok("dedup_skipped".into());
@@ -1570,6 +1663,7 @@ pub async fn start_kafka_consumers(
         rules_cache: state.rules_cache.clone(),
         allowlist: state.allowlist.clone(),
         kafka_producer_decisions: state.kafka_producers.decisions().cloned(),
+        kafka_producer_decisions_json: state.kafka_producers.decisions_json().cloned(),
     };
 
     {
@@ -1874,9 +1968,172 @@ mod dedup_retention_tests {
             "rule_eval_error",
             "max_enforcement_reached",
             "invalid_entity_id",
+            "requested_actions_denied",
+            "platform_row_without_requested_actions",
         ] {
             assert!(!outcome_holds_full_dedup(skip), "{skip} must not hold 24h");
         }
+    }
+}
+
+#[cfg(test)]
+mod generic_dispatch_tests {
+    use super::*;
+    use crate::decision::ActionSpec;
+    use crate::facts::RequestedActionFacts;
+    use crate::generic_actions::GenericActionAllowlist;
+
+    fn score_facts_with(requested: Vec<RequestedActionFacts>) -> ScoreFacts {
+        let mut f = ScoreFacts::from_score(&abuse_proto::ScoreResult::default());
+        f.requested_actions = requested;
+        f
+    }
+
+    fn user_allowlist() -> GenericActionAllowlist {
+        GenericActionAllowlist {
+            kinds: ["suspend", "label"]
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+            suspend_policies: ["PlatformManipulation"]
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+            labels: ["SpamHighRecall"].iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+            #[test]
+    fn expand_allowed_requested_actions_yields_plain_act_decision() {
+        let facts = score_facts_with(vec![RequestedActionFacts {
+            kind: "suspend".into(),
+            perm: false,
+            policy: "PlatformManipulation".into(),
+            head: "IsSpammer".into(),
+            ..Default::default()
+        }]);
+        let (decision, skipped) =
+            expand_requested_actions_decision(EntityType::User, &facts, &user_allowlist());
+        assert_eq!(
+            decision,
+            ExpandedDecision::Act(vec![ActionSpec::SuspendUser {
+                perm: false,
+                policy: "PlatformManipulation".into(),
+            }])
+        );
+        assert!(skipped.is_none());
+    }
+
+    #[test]
+    fn expand_denied_requested_actions_yields_skip_with_reason() {
+        let facts = score_facts_with(vec![RequestedActionFacts {
+            kind: "suspend".into(),
+            policy: "PlatformManipulation".into(),
+            head: "IsSpammer".into(),
+            ..Default::default()
+        }]);
+        let (decision, skipped) = expand_requested_actions_decision(
+            EntityType::User,
+            &facts,
+            &GenericActionAllowlist::default(),
+        );
+        assert_eq!(
+            decision,
+            ExpandedDecision::Skip(REQUESTED_ACTIONS_DENIED.into())
+        );
+        let skipped = skipped.expect("refused entries must be reported");
+        assert!(skipped.contains("kind_not_allowlisted"), "{skipped}");
+    }
+
+    #[test]
+    fn expand_empty_requested_actions_yields_skip() {
+        let (decision, skipped) = expand_requested_actions_decision(
+            EntityType::User,
+            &score_facts_with(vec![]),
+            &user_allowlist(),
+        );
+        assert_eq!(
+            decision,
+            ExpandedDecision::Skip(REQUESTED_ACTIONS_DENIED.into())
+        );
+        assert!(skipped.is_none());
+    }
+
+    #[test]
+    fn expand_partial_allowlist_dispatches_allowed_and_reports_skipped() {
+        let facts = score_facts_with(vec![
+            RequestedActionFacts {
+                kind: "label".into(),
+                labels: vec!["SpamHighRecall".into()],
+                ttl_msec: 1000,
+                head: "IsLabelHead".into(),
+                ..Default::default()
+            },
+            RequestedActionFacts {
+                kind: "bounce_captcha".into(), 
+                head: "IsCuspHead".into(),
+                ..Default::default()
+            },
+        ]);
+        let (decision, skipped) =
+            expand_requested_actions_decision(EntityType::User, &facts, &user_allowlist());
+        assert_eq!(
+            decision,
+            ExpandedDecision::Act(vec![ActionSpec::AddLabelsV2 {
+                labels: vec!["SpamHighRecall".into()],
+                ttl_msec: Some(1000),
+            }])
+        );
+        let skipped = skipped.expect("refused entry must be reported");
+        assert!(skipped.contains("bounce_captcha"), "{skipped}");
+        assert!(skipped.contains("kind_not_allowlisted"), "{skipped}");
+    }
+}
+
+#[cfg(test)]
+mod decision_outcome_json_tests {
+    use super::*;
+    use xai_abuse_proto::enforcement::{
+        EntityType as ProtoEntityType, FiredHead, ScoreResult, SummaryCounters,
+    };
+
+                        #[test]
+    fn decision_outcome_json_mirror_carries_funnel_fields() {
+        let score = ScoreResult {
+            user_id: 100,
+            model_version: "my_model@1".into(),
+            entity_type: ProtoEntityType::Post as i32,
+            entity_id: 555,
+            summary: Some(SummaryCounters {
+                labels: vec!["my_model_threshold_reached".into()],
+                fired_heads: vec![FiredHead {
+                    name: "IsSpamPost".into(),
+                    score: 0.99,
+                    threshold: 0.9,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut info = BTreeMap::new();
+        info.insert(
+            "action_kinds".to_owned(),
+            r#"["addPostLabelsV2"]"#.to_owned(),
+        );
+        let outcome = decision_outcome(&score, "some.topic", "success".into(), true, info);
+        let v = serde_json::to_value(&outcome).expect("DecisionOutcome serializes to JSON");
+
+        assert!(v["decided_at_ms"].as_i64().unwrap() > 0);
+        assert_eq!(v["source_topic"], "some.topic");
+        assert_eq!(v["entity_type"], "post");
+        assert_eq!(v["entity_id"], 555);
+        assert_eq!(v["model_version"], "my_model@1");
+        assert_eq!(v["status"], "success");
+        assert_eq!(v["dry_run"], true);
+        assert_eq!(v["head"], "IsSpamPost");
+        assert_eq!(v["fired_heads"][0]["name"], "IsSpamPost");
+        assert_eq!(v["labels"][0], "my_model_threshold_reached");
+        assert_eq!(v["info"]["action_kinds"], r#"["addPostLabelsV2"]"#);
     }
 }
 

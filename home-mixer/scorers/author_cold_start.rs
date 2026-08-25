@@ -214,7 +214,7 @@ fn sample_reward<R: Rng + ?Sized>(
     scale: f64,
     rng: &mut R,
 ) -> f64 {
-    let n = scale * candidate.view_count.unwrap_or(0) as f64;
+    let n = scale * candidate.view_count_on_home.unwrap_or(0) as f64;
     let x = (candidate.fav_count.unwrap_or(0).max(0) as f64).min(n);
     let alpha = alpha0 + x;
     let beta = beta0 + (n - x).max(0.0);
@@ -273,7 +273,7 @@ fn apply_cold_start(
                 && cold_start_corpus_eligible(arm, c, corpus[*i])
                 && cold_start_freshness_eligible(arm, c, max_post_age)
                 && positions[*i] < max_cold_start_slot
-                && c.view_count.is_some_and(|imp| imp < threshold)
+                && c.view_count_on_home.is_some_and(|imp| imp < threshold)
         })
         .map(|(i, _)| i)
         .collect();
@@ -411,7 +411,6 @@ rust_home_mixer:
                 Arc::new(NullBucketImpressor::new()),
                 None,
                 false,
-                None,
             )
             .unwrap(),
         );
@@ -428,32 +427,36 @@ rust_home_mixer:
         current_time_to_id() as u64 - ((age.as_millis() as u64) << 22)
     }
 
-    fn cold_start_candidate(author_id: u64, age: Duration, view_count: u64) -> PostCandidate {
-        cold_start_candidate_with_favs(author_id, age, view_count, 0)
+    fn cold_start_candidate(
+        author_id: u64,
+        age: Duration,
+        view_count_on_home: u64,
+    ) -> PostCandidate {
+        cold_start_candidate_with_favs(author_id, age, view_count_on_home, 0)
     }
 
     fn cold_start_candidate_with_favs(
         author_id: u64,
         age: Duration,
-        view_count: u64,
+        view_count_on_home: u64,
         fav_count: i64,
     ) -> PostCandidate {
         PostCandidate {
             author_id,
             tweet_id: tweet_id_with_age(age),
             author_followers_count: Some(100),
-            view_count: Some(view_count),
+            view_count_on_home: Some(view_count_on_home),
             fav_count: Some(fav_count),
             ..Default::default()
         }
     }
 
-    fn moe_candidate(author_id: u64, age: Duration, view_count: u64) -> PostCandidate {
+    fn moe_candidate(author_id: u64, age: Duration, view_count_on_home: u64) -> PostCandidate {
         PostCandidate {
             author_id,
             tweet_id: tweet_id_with_age(age),
             author_followers_count: Some(100),
-            view_count: Some(view_count),
+            view_count_on_home: Some(view_count_on_home),
             served_type: Some(pb::ServedType::ForYouPhoenixRetrievalMoe),
             ..Default::default()
         }

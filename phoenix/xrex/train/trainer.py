@@ -244,6 +244,13 @@ class Trainer(Config):
     )
     current_ckpt_index: int = field(init=False, repr=False, compare=False, default=0)
 
+    @property
+    def step(self) -> int:
+        state = self.state[0] if isinstance(self.state, list) else self.state
+        step = state.step + 0
+        step = step.item()
+        return step
+
     data_first_read_timeout = 60
     data_read_timeout = 30
 

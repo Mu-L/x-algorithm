@@ -33,12 +33,14 @@ _ELAPSED_SAMPLES = "elapsed_samples"
 _ELAPSED_TOKENS = "elapsed_tokens"
 _CKPT_INDEX = "checkpoint_index"
 _CKPT_EXPIRY = "checkpoint_expiry"
+_STEP = "step"
 
 COMPLETED_FILENAME = "completed"
 METADATA_FILENAME = "metadata.json"
 
 MetadataFromCheckpoint = namedtuple(
-    "MetadataFromCheckpoint", [_ELAPSED_SAMPLES, _CKPT_INDEX, _ELAPSED_TOKENS]
+    "MetadataFromCheckpoint",
+    [_ELAPSED_SAMPLES, _CKPT_INDEX, _ELAPSED_TOKENS, _STEP],
 )
 
 
@@ -57,7 +59,10 @@ def metadata_file_exists(checkpoint_path: Path):
 def read_checkpoint_metadata(metadata_path: Path) -> MetadataFromCheckpoint:
     record = json.loads(metadata_path.read_text())
     return MetadataFromCheckpoint(
-        record[_ELAPSED_SAMPLES], record[_CKPT_INDEX], record[_ELAPSED_TOKENS]
+        record[_ELAPSED_SAMPLES],
+        record[_CKPT_INDEX],
+        record[_ELAPSED_TOKENS],
+        record.get(_STEP),
     )
 
 
@@ -67,6 +72,7 @@ def write_checkpoint_metadata(
     checkpoint_index: int,
     checkpoint_expiry: str,
     elapsed_tokens: int | None,
+    step: int,
 ) -> None:
     with metadata_path.open("x") as f:
         json.dump(
@@ -75,6 +81,7 @@ def write_checkpoint_metadata(
                 _CKPT_INDEX: checkpoint_index,
                 _ELAPSED_TOKENS: elapsed_tokens,
                 _CKPT_EXPIRY: checkpoint_expiry,
+                _STEP: step,
             },
             f,
         )
@@ -93,7 +100,8 @@ def read_metadata_file(checkpoint_path: Path) -> MetadataFromCheckpoint | None:
         elapsed_samples = completion_path.read_text()
         checkpoint_index = None
         elapsed_tokens = None
-        return MetadataFromCheckpoint(elapsed_samples, checkpoint_index, elapsed_tokens)
+        step = None
+        return MetadataFromCheckpoint(elapsed_samples, checkpoint_index, elapsed_tokens, step)
     except Exception as e:
         logger.error(f"Unable to read checkpoint completion file: {str(e)}")
         return None
@@ -105,6 +113,7 @@ def write_metadata_file(
     checkpoint_index: int,
     checkpoint_expiry: str,
     elapsed_tokens: int | None,
+    step: int,
 ):
     write_checkpoint_metadata(
         checkpoint_path / METADATA_FILENAME,
@@ -112,6 +121,7 @@ def write_metadata_file(
         checkpoint_index,
         checkpoint_expiry,
         elapsed_tokens,
+        step,
     )
 
     with (checkpoint_path / COMPLETED_FILENAME).open("x") as f:
@@ -295,6 +305,7 @@ class MetadataProvider(ABC):
         checkpoint_index: int,
         checkpoint_ttl: int,
         elapsed_tokens: int,
+        step: int,
     ): ...
 
 
@@ -428,6 +439,7 @@ class FileSystemProvider(MetadataProvider):
         checkpoint_index: int,
         checkpoint_ttl: int,
         elapsed_tokens: int,
+        step: int,
     ):
         base_dir = checkpoint_dir_or_default(base_dir)
         path = Path(run.checkpoint_path(base_dir, elapsed_samples))
@@ -448,7 +460,7 @@ class FileSystemProvider(MetadataProvider):
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         write_metadata_file(
-            path, elapsed_samples, checkpoint_index, checkpoint_expiry, elapsed_tokens
+            path, elapsed_samples, checkpoint_index, checkpoint_expiry, elapsed_tokens, step
         )
 
         rpath = os.path.join(base_dir, run.name)
@@ -564,6 +576,7 @@ class MetadataManager:
         elapsed_samples: int,
         checkpoint_index: int,
         elapsed_tokens: int,
+        step: int,
         checkpoint_ttl: int = datetime.timedelta(weeks=2).total_seconds(),
     ):
         from xrex.utils.toolbox_notify import notify_checkpoint_async
@@ -579,6 +592,7 @@ class MetadataManager:
                 checkpoint_index=checkpoint_index,
                 checkpoint_ttl=checkpoint_ttl,
                 elapsed_tokens=elapsed_tokens,
+                step=step,
             )
         path = run.checkpoint_path(base_dir, elapsed_samples)
         rank_logger.info(f"Recorded checkpoint {elapsed_samples=} {path=}")
