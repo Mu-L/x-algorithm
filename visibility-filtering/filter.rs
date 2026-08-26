@@ -187,7 +187,6 @@ mod tests {
                 socialgraph,
                 labels,
                 crate::hydration::FallbackCacheMode::Disabled,
-                crate::hydration::FallbackCacheMode::Disabled,
             ),
             Policies::new(),
         )

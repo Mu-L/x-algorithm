@@ -26,7 +26,6 @@ from xai_checkpointing.tree_util import has_subtree, tree_to_dict
 
 import orbax.checkpoint as ocp
 
-logger = logging.getLogger("checkpointing")
 rank_logger = logging.getLogger("rank")
 
 PyTree = common.PyTree
@@ -81,6 +80,98 @@ def _release_batch_memory():
         pass
 
 
+def _build_read_plan(
+    metadata,
+    host_state: dict[str, jax.Array],
+    load_mask: dict[str, jax.Array],
+    rename: Callable[[str], str] | None,
+) -> list[tuple[str, str, list[bool], int]]:
+    plan: list[tuple[str, str, list[bool], int]] = []
+    for checkpoint_name in tree_to_dict(metadata, keep_none=False).keys():
+        name = checkpoint_name
+        if rename is not None:
+            name = rename(checkpoint_name)
+
+        if host_state.get(name) is None:
+            if not has_subtree(name, host_state):
+                rank_logger.warning(
+                    "Not loading %r from checkpoint because it's not in the initialized state", name
+                )
+            continue
+
+        if not load_mask:
+            mask = [True for _ in host_state[name].addressable_shards]
+        else:
+            mask = [shard.data.item() for shard in load_mask[name].addressable_shards]
+        if any(mask):
+            array = host_state[name]
+            shard_nbytes = array.dtype.itemsize * math.prod(array.sharding.shard_shape(array.shape))
+            plan.append((checkpoint_name, name, mask, shard_nbytes * sum(mask)))
+
+    return plan
+
+
+def _pack_read_batches(
+    plan: list[tuple[str, str, list[bool], int]],
+    concurrent_bytes: int | None,
+) -> list[list[tuple[str, str, list[bool], int]]]:
+    batches: list[list[tuple[str, str, list[bool], int]]] = []
+    if concurrent_bytes:
+        cur: list[tuple[str, str, list[bool], int]] = []
+        cur_bytes = 0
+        for item in plan:
+            nbytes = item[3]
+            if cur and cur_bytes + nbytes > concurrent_bytes:
+                batches.append(cur)
+                cur, cur_bytes = [], 0
+            cur.append(item)
+            cur_bytes += nbytes
+        if cur:
+            batches.append(cur)
+    elif plan:
+        batches.append(plan)
+    return batches
+
+
+def _convert_domains(domains: dict[str, Any], host_state: dict[str, jax.Array]) -> dict[str, Any]:
+    for name, domain in domains.items():
+        assert host_state.get(name) is not None, f"Cannot restrict domain of skipped tensor {name}"
+        if isinstance(domain, dict):
+            domains[name] = ts.IndexDomain(json=domain)
+        elif isinstance(domain, ts.DimExpression):
+            domains[name] = ts.IndexDomain(shape=host_state[name].shape)[domain]
+        elif not isinstance(domain, ts.IndexDomain):
+            raise ValueError(f"Unknown domain: {domain} for {name!r}")
+    return domains
+
+
+def _open_tensor(
+    checkpoint_name: str,
+    name: str,
+    path: pathlib.Path,
+    use_zarr3: bool,
+    ts_context: ts.Context,
+    dest: jax.Array,
+    has_domain: bool,
+) -> ts.TensorStore:
+    info = ocp.type_handlers.ParamInfo(
+        name=checkpoint_name,
+        path=path / checkpoint_name,
+        parent_dir=path,
+        is_ocdbt_checkpoint=True,
+        use_zarr3=use_zarr3,
+    )
+    tspec = ocp.type_handlers.get_json_tspec_read(info, use_ocdbt=True)
+    t = ts.open(ts.Spec(tspec), open=True, context=ts_context).result()
+    if not has_domain and tuple(t.shape) != tuple(dest.shape):
+        raise ValueError(
+            f"Tensor {name!r}: checkpoint has shape {tuple(t.shape)}, "
+            f"but initialized state has shape {tuple(dest.shape)}. "
+            f"Use 'no_loading' to skip this tensor or 'domains' to load a partial slice."
+        )
+    return t
+
+
 def _read_into_shards(
     t: ts.TensorStore,
     array: jax.Array,
@@ -117,6 +208,43 @@ def _read_into_shards(
         yield dest.write(src).commit
 
 
+def _drain_read_futures(
+    futures: dict[Any, tuple[str, str, int]],
+    arrays: dict[str, jax.Array],
+    path,
+    timeout: float,
+    *,
+    log_loaded: bool = False,
+) -> None:
+    for future in common._ready(list(futures), timeout=timeout):
+        try:
+            future.result()
+        except Exception:
+            checkpoint_name, name, _ = futures.pop(future, (None, None, None))
+            tensor = arrays.get(name) if name is not None else None
+            extra = (
+                f" (in checkpoint: {checkpoint_name})"
+                if checkpoint_name is not None and checkpoint_name != name
+                else ""
+            )
+            detail = f"{tensor.shape=}, {tensor.dtype=}" if tensor is not None else "missing tensor"
+            rank_logger.exception(
+                "Checkpoint error from loading %s. Error loading from %s into %s.%s",
+                path,
+                name,
+                detail,
+                extra,
+            )
+            raise
+
+        checkpoint_name, name, _ = futures.pop(future, (None, None, None))
+        if log_loaded and name is not None:
+            if checkpoint_name != name:
+                rank_logger.debug("Loaded %s (name in checkpoint: %s)", name, checkpoint_name)
+            else:
+                rank_logger.debug("Loaded %s", name)
+
+
 def load_checkpoint(
     path: str,
     host_state: PyTree[jax.Array],
@@ -132,16 +260,7 @@ def load_checkpoint(
 
     host_state = tree_to_dict(host_state)
     load_mask = tree_to_dict(load_mask)
-    domains = tree_to_dict(domains)
-
-    for name, domain in domains.items():
-        assert host_state.get(name) is not None, f"Cannot restrict domain of skipped tensor {name}"
-        if isinstance(domain, dict):
-            domains[name] = ts.IndexDomain(json=domain)
-        elif isinstance(domain, ts.DimExpression):
-            domains[name] = ts.IndexDomain(shape=host_state[name].shape)[domain]
-        elif not isinstance(domain, ts.IndexDomain):
-            raise ValueError(f"Unknown domain: {domain} for {name!r}")
+    domains = _convert_domains(tree_to_dict(domains), host_state)
 
     start = time.time()
     rank_logger.info("Restoring checkpoint from %s", path)
@@ -158,51 +277,13 @@ def load_checkpoint(
         }
     )
 
-    unloaded_state = host_state.copy()
-
-    plan: list[tuple[str, str, list[bool], int]] = []
-    for checkpoint_name in tree_to_dict(metadata, keep_none=False).keys():
-        name = checkpoint_name
-        if rename is not None:
-            name = rename(checkpoint_name)
-
-        if host_state.get(name) is None:
-            if not has_subtree(name, host_state):
-                rank_logger.warning(
-                    "Not loading %r from checkpoint because it's not in the initialized state", name
-                )
-            continue
-
-        if not load_mask:
-            mask = [True for _ in host_state[name].addressable_shards]
-        else:
-            mask = [shard.data.item() for shard in load_mask[name].addressable_shards]
-        if any(mask):
-            array = host_state[name]
-            shard_nbytes = array.dtype.itemsize * math.prod(array.sharding.shard_shape(array.shape))
-            plan.append((checkpoint_name, name, mask, shard_nbytes * sum(mask)))
-
-        del unloaded_state[name]
+    plan = _build_read_plan(metadata, host_state, load_mask, rename)
 
     concurrent_bytes = int(concurrent_gb * 10**9) if concurrent_gb else None
     total_bytes = sum(nbytes for *_, nbytes in plan)
     max_leaf = max((nbytes for *_, nbytes in plan), default=0)
 
-    batches: list[list[tuple[str, str, list[bool], int]]] = []
-    if concurrent_bytes:
-        cur: list[tuple[str, str, list[bool], int]] = []
-        cur_bytes = 0
-        for item in plan:
-            nbytes = item[3]
-            if cur and cur_bytes + nbytes > concurrent_bytes:
-                batches.append(cur)
-                cur, cur_bytes = [], 0
-            cur.append(item)
-            cur_bytes += nbytes
-        if cur:
-            batches.append(cur)
-    elif plan:
-        batches.append(plan)
+    batches = _pack_read_batches(plan, concurrent_bytes)
     num_batches = len(batches)
 
     if concurrent_bytes:
@@ -234,26 +315,6 @@ def load_checkpoint(
 
     futures: dict[Any, tuple[str, str, int]] = {}
 
-    def drain():
-        for future in common._ready(list(futures), timeout=timeout):
-            try:
-                future.result()
-            except Exception as e:
-                logger.exception(e)
-                checkpoint_name, name, _ = futures.pop(future, None)
-                tensor = host_state[name]
-                err = f"Checkpoint error from loading {path}. Error loading from {name} into {tensor.shape=}, {tensor.dtype=}."
-                if checkpoint_name != name:
-                    err = f"{err} (in checkpoint: {checkpoint_name})"
-                logger.error(err)
-                raise
-
-            checkpoint_name, name, _ = futures.pop(future, None)
-            if checkpoint_name != name:
-                rank_logger.debug("Loaded %s (name in checkpoint: %s)", name, checkpoint_name)
-            else:
-                rank_logger.debug("Loaded %s", name)
-
     node_lock: _NodeBatchLock | None = None
     if _restore_node_serialize_enabled():
         node_lock = _NodeBatchLock(_node_lock_path())
@@ -269,23 +330,15 @@ def load_checkpoint(
             with node_lock if node_lock is not None else contextlib.nullcontext():
                 stores = []
                 for checkpoint_name, name, mask, _nbytes in batch:
-                    info = ocp.type_handlers.ParamInfo(
-                        name=checkpoint_name,
-                        path=path / checkpoint_name,
-                        parent_dir=path,
-                        is_ocdbt_checkpoint=True,
-                        use_zarr3=use_zarr3,
+                    t = _open_tensor(
+                        checkpoint_name,
+                        name,
+                        path,
+                        use_zarr3,
+                        ts_context,
+                        host_state[name],
+                        has_domain=domains.get(name) is not None,
                     )
-                    tspec = ocp.type_handlers.get_json_tspec_read(info, use_ocdbt=True)
-                    t = ts.open(ts.Spec(tspec), open=True, context=ts_context).result()
-                    if domains.get(name) is None and tuple(t.shape) != tuple(
-                        host_state[name].shape
-                    ):
-                        raise ValueError(
-                            f"Tensor {name!r}: checkpoint has shape {tuple(t.shape)}, "
-                            f"but initialized state has shape {tuple(host_state[name].shape)}. "
-                            f"Use 'no_loading' to skip this tensor or 'domains' to load a partial slice."
-                        )
                     for s, future in enumerate(
                         _read_into_shards(t, host_state[name], mask, domains.get(name))
                     ):
@@ -299,7 +352,7 @@ def load_checkpoint(
                     inflight_bytes / (1 << 30),
                     len(futures),
                 )
-                drain()
+                _drain_read_futures(futures, host_state, path, timeout, log_loaded=True)
                 del stores
             _release_batch_memory()
     finally:
@@ -307,6 +360,176 @@ def load_checkpoint(
             node_lock.close()
 
     rank_logger.info("Loading checkpoint took %.2f sec", time.time() - start)
+
+
+_AUTO_WINDOW_TARGET_BATCHES = 16
+_AUTO_WINDOW_MAX_BYTES = 32 * 10**9
+
+
+def _auto_window_bytes(plan: list[tuple[str, str, list[bool], int]]) -> int:
+    total = sum(nbytes for *_, nbytes in plan)
+    max_leaf = max((nbytes for *_, nbytes in plan), default=0)
+    return int(min(max(max_leaf, total / _AUTO_WINDOW_TARGET_BATCHES), _AUTO_WINDOW_MAX_BYTES))
+
+
+def _stage_to_host(arrays: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    staged = {}
+    for name, array in arrays.items():
+        is_cpu = all(d.platform == "cpu" for d in array.sharding.addressable_devices)
+        kind = "unpinned_host" if is_cpu else "pinned_host"
+        staged[name] = jax.device_put(array, array.sharding.with_memory_kind(kind))
+    jax.block_until_ready(list(staged.values()))
+    return staged
+
+
+def copy_aliased_arrays(tree):
+    seen: set[int] = set()
+
+    def _copy(x):
+        if not isinstance(x, jax.Array):
+            return x
+        if id(x) in seen:
+            copied = jax.device_put(x, x.sharding, may_alias=False)
+            assert copied is not x
+            return copied
+        seen.add(id(x))
+        return x
+
+    return jax.tree.map(_copy, tree)
+
+
+def load_checkpoint_streamed(
+    path: str,
+    device_state: dict[str, jax.Array],
+    load_mask: PyTree[jax.Array] | None,
+    rename: Callable[[str], str] | None = None,
+    domains: dict[str, Any] | None = None,
+    tag: str | None = None,
+    timeout: float = 900.0,
+    window_gb: float | None = None,
+    window_cap_gb: float | None = None,
+    on_replaced: Callable[[list[tuple[jax.Array, jax.Array]]], None] | None = None,
+) -> list[tuple[jax.Array, jax.Array]]:
+    if tag is None:
+        tag = "orbax-ckpt"
+
+    load_mask = tree_to_dict(load_mask)
+    domains = _convert_domains(tree_to_dict(domains), device_state)
+
+    src_path = path
+    start = time.time()
+
+    path = pathlib.Path(path) / tag
+    metadata = ocp.StandardCheckpointer().metadata(path)
+    with (path / "_METADATA").open() as f:
+        use_zarr3 = json.load(f)["use_zarr3"]
+
+    ts_context = ts.Context(
+        {
+            "file_io_concurrency": {"limit": 128},
+            "cache_pool#ocdbt": {"total_bytes_limit": 100000000},
+        }
+    )
+
+    plan = _build_read_plan(metadata, device_state, load_mask, rename)
+    plan.sort(key=lambda item: item[3], reverse=True)
+
+    auto_window = window_gb is None
+    window_bytes = _auto_window_bytes(plan) if auto_window else int(window_gb * 10**9)
+    total_bytes = sum(nbytes for *_, nbytes in plan)
+    max_leaf = max((nbytes for *_, nbytes in plan), default=0)
+    if window_cap_gb is not None:
+        window_bytes = min(window_bytes, max(max_leaf, int(window_cap_gb * 10**9)))
+
+    batches = _pack_read_batches(plan, window_bytes)
+    num_batches = len(batches)
+
+    rank_logger.info(
+        "Restoring %s (streamed): window=%.2fGiB%s total=%.2fGiB tensors=%d "
+        "max_leaf=%.2fGiB batches=%d",
+        src_path,
+        window_bytes / (1 << 30),
+        " (auto)" if auto_window else "",
+        total_bytes / (1 << 30),
+        len(plan),
+        max_leaf / (1 << 30),
+        num_batches,
+    )
+    if num_batches <= 1 and len(plan) > 1:
+        rank_logger.warning(
+            "load_checkpoint_streamed: window %.2fGiB covers the full %.2fGiB state "
+            "(one batch); set restore_window_gb between %.2fGiB and the total to bound RSS",
+            window_bytes / (1 << 30),
+            total_bytes / (1 << 30),
+            max_leaf / (1 << 30),
+        )
+    elif max_leaf > window_bytes:
+        rank_logger.warning(
+            "load_checkpoint_streamed: largest tensor %.2fGiB > window %.2fGiB; "
+            "that leaf still needs its full size in pinned memory",
+            max_leaf / (1 << 30),
+            window_bytes / (1 << 30),
+        )
+
+    replaced: list[tuple[jax.Array, jax.Array]] = []
+    futures: dict[Any, tuple[str, str, int]] = {}
+
+    node_lock: _NodeBatchLock | None = None
+    if _restore_node_serialize_enabled():
+        node_lock = _NodeBatchLock(_node_lock_path())
+        rank_logger.info(
+            "restore node-serialize ACTIVE (flock per batch) lock=%s pid=%d num_batches=%d",
+            node_lock._path,
+            os.getpid(),
+            num_batches,
+        )
+
+    try:
+        for batch in batches:
+            with node_lock if node_lock is not None else contextlib.nullcontext():
+                staging = _stage_to_host({name: device_state[name] for _, name, _, _ in batch})
+
+                stores = []
+                for checkpoint_name, name, mask, _nbytes in batch:
+                    t = _open_tensor(
+                        checkpoint_name,
+                        name,
+                        path,
+                        use_zarr3,
+                        ts_context,
+                        staging[name],
+                        has_domain=domains.get(name) is not None,
+                    )
+                    for s, future in enumerate(
+                        _read_into_shards(t, staging[name], mask, domains.get(name))
+                    ):
+                        futures[future] = (checkpoint_name, name, s)
+                    stores.append(t)
+
+                _drain_read_futures(futures, staging, path, timeout)
+
+                new_arrays = {
+                    name: jax.device_put(staging[name], device_state[name].sharding)
+                    for _, name, _, _ in batch
+                }
+                jax.block_until_ready(list(new_arrays.values()))
+                batch_replaced = []
+                for _, name, _, _ in batch:
+                    batch_replaced.append((device_state[name], new_arrays[name]))
+                    device_state[name] = new_arrays[name]
+                if on_replaced is not None:
+                    on_replaced(batch_replaced)
+                else:
+                    replaced.extend(batch_replaced)
+
+                del staging, new_arrays, stores, batch_replaced
+            _release_batch_memory()
+    finally:
+        if node_lock is not None:
+            node_lock.close()
+
+    rank_logger.info("Loading checkpoint (streamed) took %.2f sec", time.time() - start)
+    return replaced
 
 
 def broadcast_replicated(

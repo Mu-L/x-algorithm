@@ -452,6 +452,12 @@ pub fn record_admission_service_sample(admission: &AdmissionController, sample_u
     ADMISSION_SERVICE_TIME_MS.set(admission.service_time_us() as f64 / 1000.0);
 }
 
+pub fn reset_admission_estimates(admission: &AdmissionController) {
+    admission.reset_estimates();
+    ADMISSION_SERVICE_TIME_MS.set(0.0);
+    ADMISSION_PIPELINE_TIME_MS.set(0.0);
+}
+
 pub fn record_admission_sojourn_sample(
     admission: &AdmissionController,
     sample_us: u64,
@@ -780,6 +786,30 @@ mod tests {
         NUM_REQUESTS_REJECTED
             .with_label_values(&[reason, client])
             .get()
+    }
+
+    #[test]
+    fn reset_admission_estimates_clears_gauges_and_p() {
+        let admission = AdmissionController::new(AdmissionConfig {
+            enabled: true,
+            batch_size: 4,
+            margin_us: 0,
+            post_us: 0,
+            fallback_budget_us: 0,
+            ewma_alpha: 1.0,
+            pipeline_depth: 0,
+            eta_model: AdmissionEtaModel::Pipeline,
+        });
+        admission.record_service_time_us(50_000);
+        admission.record_sojourn_us(80_000, 0);
+        record_admission_service_sample(&admission, 50_000);
+        record_admission_sojourn_sample(&admission, 80_000, 0);
+        assert!(admission.pipeline_time_us() > 0);
+        reset_admission_estimates(&admission);
+        assert_eq!(admission.service_time_us(), 0);
+        assert_eq!(admission.pipeline_time_us(), 0);
+        assert_eq!(ADMISSION_SERVICE_TIME_MS.get(), 0.0);
+        assert_eq!(ADMISSION_PIPELINE_TIME_MS.get(), 0.0);
     }
 
     #[test]

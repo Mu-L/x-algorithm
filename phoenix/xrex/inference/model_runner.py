@@ -3253,7 +3253,7 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
                         )
                         *model_out_jax, has_nan_jax = last_out
                         output_array = tuple(as_np_array(x) for x in model_out_jax)
-                        has_nan = bool(np.asarray(has_nan_jax))
+                        has_nan = bool(np.any(np.asarray(has_nan_jax)))
                         logger.info(
                             f"[batch={last_batch_id}] as_np_array took {as_np_array_t.elapsed() * 1000:.2f}ms"
                         )
@@ -4276,10 +4276,13 @@ class RankingModelRunner(
             logits, candidate_continuous_predictions = model.forward(batch, recsys_embeddings)
             log_probs = jax.nn.log_sigmoid(logits).astype(jnp.float32)
             cont_preds = candidate_continuous_predictions.astype(jnp.float32)
-            has_nan = jnp.any(jnp.isnan(log_probs))
+            has_nan = jnp.any(jnp.isnan(log_probs), axis=tuple(range(1, log_probs.ndim)))
             return log_probs, cont_preds, has_nan
 
         self.forward_fn = forward_fn
+        nan_sharding = jax.sharding.NamedSharding(
+            self.data_sharding.mesh, P(self.data_sharding.spec[0])
+        )
 
         forward_jit = JittedOrCompiled(
             jax.jit(
@@ -4290,7 +4293,7 @@ class RankingModelRunner(
                     self.data_sharding,
                     self.data_sharding,
                 ),
-                out_shardings=(self.data_sharding, self.data_sharding, None),
+                out_shardings=(self.data_sharding, self.data_sharding, nan_sharding),
             ),
             name=f"forward_fn_bs{bs}",
         )

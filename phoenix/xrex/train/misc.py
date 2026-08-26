@@ -53,6 +53,10 @@ class CheckpointConfig(Config):
     checkpoint_compressed: bool = True
     checkpoint_chunk_size_bytes: int = 1024 * 1024 * 4
 
+    save_concurrent_gb: int | None = None
+
+    restore_concurrent_gb: int | None = 32
+
     checkpoint_ttl: int = datetime.timedelta(weeks=2).total_seconds()
 
     replication_mode: Literal["full", "dp_only", "none"] = "dp_only"

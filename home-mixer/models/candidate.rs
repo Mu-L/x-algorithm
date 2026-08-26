@@ -96,6 +96,10 @@ pub struct SlateContext {
     pub sid_gap_l3: Option<u32>,
     #[serde(default)]
     pub recon_cos_milli: Option<u32>,
+    #[serde(default)]
+    pub recon_count_above: Option<u32>,
+    #[serde(default)]
+    pub recon_gap_above: Option<u32>,
 }
 
 impl From<xai_recsys_proto::SlateContext> for SlateContext {
@@ -114,6 +118,8 @@ impl From<xai_recsys_proto::SlateContext> for SlateContext {
             sid_gap_l2: c.sid_gap2,
             sid_gap_l3: c.sid_gap3,
             recon_cos_milli: c.recon_cos_milli,
+            recon_count_above: c.recon_count_above,
+            recon_gap_above: c.recon_gap_above,
         }
     }
 }
@@ -198,6 +204,8 @@ impl CandidateHelpers for PostCandidate {
                 sid_gap2: c.sid_gap_l2,
                 sid_gap3: c.sid_gap_l3,
                 recon_cos_milli: c.recon_cos_milli,
+                recon_count_above: c.recon_count_above,
+                recon_gap_above: c.recon_gap_above,
             }),
             reward_rerank_slot_prob: None,
         }

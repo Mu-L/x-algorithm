@@ -6,7 +6,6 @@ import math
 
 import jax
 import jax.numpy as jnp
-from jax.ad_checkpoint import checkpoint_name
 
 
 _FA4_KERNEL_CACHE = {}
@@ -362,8 +361,6 @@ def ranker_attention_fa4(q, k, v, sm_scale, block_sparse_layout):
 
     def _attention_fwd(q, k, v):
         out, lse = c["fwd_call"](q, k, v, *_fwd_extra)
-        out = checkpoint_name(out, "attn_outputs")
-        lse = checkpoint_name(lse, "attn_outputs")
         return out, (q, k, v, out, lse)
 
     def _attention_bwd(res, g):

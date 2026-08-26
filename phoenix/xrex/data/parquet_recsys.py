@@ -768,9 +768,9 @@ def pad_batch(batch_unpadded: RecsysFeaturesBatch, batch_size: int) -> RecsysFea
 
     def pad_post_seq(post_seq: PostSeq) -> PostSeq:
         padded = _pad_post_seq_fields(post_seq)
-        if (_ckm := post_seq.get("conversion_keep_mask")) is not None:
-            padded["conversion_keep_mask"] = np.pad(
-                _ckm, ((0, batch_size - num_rows), (0, 0)), constant_values=True
+        if (_tcm := post_seq.get("trained_candidate_mask")) is not None:
+            padded["trained_candidate_mask"] = np.pad(
+                _tcm, ((0, batch_size - num_rows), (0, 0)), constant_values=True
             )
         return padded
 
@@ -1361,7 +1361,7 @@ class PhoenixDataset(Dataset):
                 ),
                 product_surface=np.zeros((batch_size, candidate_seq_len), dtype=np.int32),
                 client_app_id=np.zeros((batch_size, candidate_seq_len), dtype=np.int32),
-                conversion_keep_mask=np.ones((batch_size, candidate_seq_len), dtype=np.bool_),
+                trained_candidate_mask=np.ones((batch_size, candidate_seq_len), dtype=np.bool_),
                 post_ids=np.zeros((batch_size, candidate_seq_len), dtype=np.int64)
                 if self.include_candidate_post_ids
                 else None,
@@ -1492,7 +1492,7 @@ class PhoenixToyDataset(PhoenixDataset):
                 auth_hashes=self.hash_table.get_author_hash(candidate_author_ids),
                 product_surface=candidate_product_surface,
                 client_app_id=np.zeros((batch_size, self.candidate_seq_len), dtype=np.int32),
-                conversion_keep_mask=np.ones((batch_size, candidate_seq_len), dtype=np.bool_),
+                trained_candidate_mask=np.ones((batch_size, candidate_seq_len), dtype=np.bool_),
                 post_ids=candidate_tweet_ids.astype(np.int64)
                 if self.include_candidate_post_ids
                 else None,

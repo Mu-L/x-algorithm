@@ -1160,6 +1160,12 @@ class Trainer(Config):
         rank_logger.info("Not loading optimizer state from checkpoint")
         return host_state.purge_opt_state()
 
+    def warm_start_staging_spec(self):
+        keep_fields = {"opt_state"}
+        if hasattr(self.state, "emb_table_state"):
+            keep_fields.add("emb_table_state")
+        return (lambda tree: tree.purge_opt_state()), keep_fields
+
     def maybe_load_checkpoint(
         self, ctx: TrainerContext, tag: str | None = None
     ) -> tuple[bool, int, int]:
@@ -1167,13 +1173,30 @@ class Trainer(Config):
             rank_logger.info("Not loading checkpoint; starting from scratch")
             return False, 0, 0
 
+        do_not_load_opt_state = (
+            self.checkpoint_config.no_opt_state or self.reinit_on_load
+        ) and ctx.checkpoint.is_manual_load()
+
         restore_kind = next(
             k for k in jax.tree.leaves(jax.tree.map(lambda s: s.memory_kind, self.host_sharding))
         )
         restore_staging_sharding = jax.tree.map(
             lambda s: s.with_memory_kind(restore_kind), self.state_sharding
         )
-        self.host_state = jax.device_put(self.state, restore_staging_sharding)
+        warm_purge = None
+        warm_keep_fields: set[str] = set()
+        if do_not_load_opt_state and hasattr(self.state, "purge_opt_state"):
+            warm_purge, warm_keep_fields = self.warm_start_staging_spec()
+            rank_logger.info(
+                "Not loading optimizer state from checkpoint (params-only pinned-host staging)"
+            )
+            self.host_state = jax.device_put(
+                warm_purge(self.state),
+                warm_purge(restore_staging_sharding),
+            )
+        else:
+            do_not_load_opt_state = False
+            self.host_state = jax.device_put(self.state, restore_staging_sharding)
 
         rename = None
 
@@ -1181,10 +1204,6 @@ class Trainer(Config):
 
         if ctx.checkpoint.format == "orbax":
             host_state = unwrap_tree(self.host_state)
-
-            do_not_load_opt_state = (
-                self.checkpoint_config.no_opt_state or self.reinit_on_load
-            ) and ctx.checkpoint.is_manual_load()
 
             if do_not_load_opt_state:
                 host_state = self.purge_opt_state_on_load(host_state)
@@ -1238,11 +1257,23 @@ class Trainer(Config):
                     domains=domains,
                     tag=tag,
                     timeout=self.checkpoint_config.timeout_secs,
+                    concurrent_gb=self.checkpoint_config.restore_concurrent_gb,
                 )
 
-            self.state = None
-            self.state = jax.device_put(self.host_state, self.state_sharding)
-            self.host_state = jax.device_put(self.state, self.host_sharding)
+            if do_not_load_opt_state:
+                loaded = jax.device_put(self.host_state, warm_purge(self.state_sharding))
+                self.state = self.state._replace(
+                    **{
+                        field: getattr(loaded, field)
+                        for field in self.state._fields
+                        if field not in warm_keep_fields
+                    }
+                )
+                self.host_state = None
+            else:
+                self.state = None
+                self.state = jax.device_put(self.host_state, self.state_sharding)
+                self.host_state = jax.device_put(self.state, self.host_sharding)
 
             if mask:
                 axes_sizes = {}

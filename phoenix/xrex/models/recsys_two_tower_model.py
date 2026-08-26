@@ -57,6 +57,7 @@ from xrex.models.recsys_model import (
 )
 from xrex.models.scaling import ScaleConfig
 from xrex.models.sharding_context import ShardingContext
+from xrex.pallas.ranker_attention_utils import HISTORY_SEGMENT_ID
 from xrex.train.misc import PostEmbeddings
 from xrex.utils.utils import Summary
 
@@ -64,6 +65,12 @@ logger = logging.getLogger(__name__)
 rank_logger = logging.getLogger("rank")
 EPS = 1e-12
 INF = 1e12
+
+
+def user_tower_segment_ids(batch: int, seq_len: int, *, use_history_segment_ids: bool) -> jax.Array:
+    if use_history_segment_ids:
+        return jnp.full((batch, seq_len), HISTORY_SEGMENT_ID, dtype=jnp.int32)
+    return jnp.zeros((batch, seq_len), dtype=jnp.int32)
 
 
 def _l2_normalize_candidates(embeddings: jax.Array) -> jax.Array:
@@ -1259,7 +1266,9 @@ class RecsysTwoTowerModel(hk.Module):
             )
 
             B, T = user_padding_mask.shape
-            user_segment_ids = jnp.zeros((B, T), dtype=jnp.int32)
+            user_segment_ids = user_tower_segment_ids(
+                B, T, use_history_segment_ids=self.config.use_history_segment_ids
+            )
 
             if self.config.user_tower_config.right_anchored_rope:
                 user_positions = right_anchored_rope_positions(
@@ -1581,6 +1590,8 @@ class RecsysTwoTowerModelConfig(Config):
     apply_u2u_and_i2i_loss: bool = False
 
     ads_only_candidates: bool = False
+
+    use_history_segment_ids: bool = False
 
     multimodal_embedding_type: EmbeddingType | None = None
 

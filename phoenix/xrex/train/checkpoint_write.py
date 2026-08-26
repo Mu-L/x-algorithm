@@ -126,6 +126,7 @@ def save_checkpoint(
         compressed=self.checkpoint_config.checkpoint_compressed,
         chunk_byte_size=self.checkpoint_config.checkpoint_chunk_size_bytes,
         tracer=tracer,
+        save_concurrent_gb=self.checkpoint_config.save_concurrent_gb,
     )
 
 

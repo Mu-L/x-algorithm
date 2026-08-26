@@ -1331,8 +1331,18 @@ class RecsysTrainer(Trainer):
 
         valid_step, grad_norm = self.is_valid_step(gradients)
 
+        segment_sum_result = self._segment_sum(emb_gradients, inverse_indices, num_unique)
+
+        emb_gradients = replace(
+            emb_gradients.history_author_embeddings,
+            x=segment_sum_result,
+        )
+
+        emb_valid_step, emb_grad_norm = self.is_valid_step(emb_gradients)
+        keep_step = valid_step & emb_valid_step
+
         def _update(updated, original):
-            return jnp.where(valid_step, updated, original)
+            return jnp.where(keep_step, updated, original)
 
         new_params = jax.tree.map(_update, new_params, state.params)
         new_opt_state = jax.tree.map(_update, new_opt_state, state.opt_state)
@@ -1343,7 +1353,7 @@ class RecsysTrainer(Trainer):
             "step": state.step,
             "loss": loss,
             "examples_per_batch": examples,
-            "valid_step": valid_step,
+            "valid_step": keep_step,
             "global_grad_norm": grad_norm,
             "learning_rate": lr * new_opt_state.hyperparams["learning_rate"],
             "weight_decay": new_opt_state.hyperparams["weight_decay"],
@@ -1357,15 +1367,6 @@ class RecsysTrainer(Trainer):
         new_calib_ema = stats.pop("_calib_ema", state.calib_ema)
         metrics.update(**stats)
 
-        segment_sum_result = self._segment_sum(emb_gradients, inverse_indices, num_unique)
-
-        emb_gradients = replace(
-            emb_gradients.history_author_embeddings,
-            x=segment_sum_result,
-        )
-
-        emb_valid_step, emb_grad_norm = self.is_valid_step(emb_gradients)
-
         new_emb_table, emb_new_opt_state, emb_optim_metrics = self._emb_optim.sparse_update(
             grads=emb_gradients,
             full_state=state.emb_table_state,
@@ -1373,7 +1374,7 @@ class RecsysTrainer(Trainer):
             unique_tokens=unique_tokens,
             num_unique=num_unique,
             lr=lr,
-            valid_step=emb_valid_step,
+            valid_step=keep_step,
             carry=emb_carry,
         )
 
@@ -1402,7 +1403,7 @@ class RecsysTrainer(Trainer):
         metric_keys, metric_values = zip(*metrics.items())
         metrics = {
             metric_keys: jnp.stack([jnp.float32(v) for v in metric_values], axis=0),
-            ("valid_step",): valid_step & emb_valid_step,
+            ("valid_step",): keep_step,
         }
 
         return new_state, metrics, {}
@@ -1512,8 +1513,12 @@ class RecsysTrainer(Trainer):
 
         valid_step, grad_norm = self.is_valid_step(gradients)
 
+        emb_gradients = jax.tree.map(lambda x: x.astype(jnp.bfloat16), emb_gradients)
+        deferred_emb_valid_step, deferred_emb_grad_norm = self.is_valid_step(emb_gradients)
+        keep_step = valid_step & deferred_emb_valid_step
+
         def _update(updated, original):
-            return jnp.where(valid_step, updated, original)
+            return jnp.where(keep_step, updated, original)
 
         new_params = jax.tree.map(_update, new_params, state.params)
         new_opt_state = jax.tree.map(_update, new_opt_state, state.opt_state)
@@ -1522,7 +1527,7 @@ class RecsysTrainer(Trainer):
             "step": state.step,
             "loss": loss,
             "examples_per_batch": np.prod(data["user_hashes"].shape[:-1]),
-            "valid_step": valid_step,
+            "valid_step": keep_step,
             "global_grad_norm": grad_norm,
             "learning_rate": lr * new_opt_state.hyperparams["learning_rate"],
             "weight_decay": new_opt_state.hyperparams["weight_decay"],
@@ -1530,6 +1535,8 @@ class RecsysTrainer(Trainer):
             "b2": new_opt_state.hyperparams["b2"],
             "emb_grad_norm": emb_grad_norm,
             "emb_valid_step": emb_valid_step,
+            "deferred_emb_grad_norm": deferred_emb_grad_norm,
+            "deferred_emb_valid_step": deferred_emb_valid_step,
         }
         metrics.update(emb_optim_metrics)
         if self.track_norm_metrics:
@@ -1544,10 +1551,9 @@ class RecsysTrainer(Trainer):
         metric_keys, metric_values = zip(*metrics.items())
         metrics = {
             metric_keys: jnp.stack([jnp.float32(v) for v in metric_values], axis=0),
-            ("valid_step",): valid_step & emb_valid_step,
+            ("valid_step",): keep_step,
         }
 
-        emb_gradients = jax.tree.map(lambda x: x.astype(jnp.bfloat16), emb_gradients)
         next_step_grad_update = AsyncEmbGradientUpdate(
             unique_tokens=unique_tokens,
             grads=jax.lax.with_sharding_constraint(
@@ -1555,7 +1561,7 @@ class RecsysTrainer(Trainer):
                 P(self._async_emb_context.data_axis, None),
             ),
             segment_ids=segment_ids,
-            pending=jnp.asarray(True),
+            pending=keep_step,
         )
 
         new_state = RecsysTrainingState(
@@ -1712,7 +1718,6 @@ class RecsysTrainer(Trainer):
         assert self.parallel_config.num_devices_per_process == 1
         assert "expert" in data_axis
         assert all(self.mesh.shape[a] == 1 for a in data_axis if a != "expert")
-        assert self.grad_norm_keep_threshold is None
         assert isinstance(self._emb_optim, AsyncEmbOptimizer)
 
         tokens_per_example = jax.eval_shape(self.get_flattened_token_ids, init_data).shape[1]
@@ -2438,6 +2443,11 @@ class RecsysTrainer(Trainer):
             rank_logger.info("Not loading dense optimizer state (keeping emb_table_state)")
             return host_state._replace(opt_state=None)
         return super().purge_opt_state_on_load(host_state)
+
+    def warm_start_staging_spec(self):
+        if getattr(self.checkpoint_config, "keep_emb_opt_state", False):
+            return (lambda tree: tree._replace(opt_state=None)), {"opt_state"}
+        return super().warm_start_staging_spec()
 
     def maybe_load_checkpoint(self, ctx: TrainerContext, tag=None):
         assert isinstance(

@@ -591,6 +591,7 @@ for config in configs:
             num_global_negatives_per_example=mparams["num_global_negatives_per_example"],
             debug_mode=False,
             apply_u2u_and_i2i_loss=mparams.get("apply_u2u_and_i2i_loss", False),
+            use_history_segment_ids=mparams.get("use_history_segment_ids", False),
             positive_actions=positive_actions,
             hard_negative_actions=hard_negative_actions,
             soft_negative_actions=soft_negative_actions,

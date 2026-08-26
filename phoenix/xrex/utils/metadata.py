@@ -254,7 +254,7 @@ def guess_checkpoint_format(path):
     raise ValueError(f"Could not determine format of checkpoint at {path}")
 
 
-def _has_committed_payload(checkpoint_path: Path) -> bool:
+def has_committed_payload(checkpoint_path: Path) -> bool:
     if (checkpoint_path / "ckpt-0" / "tensor00000_000").exists():
         return True
     final_names = set()
@@ -272,7 +272,7 @@ def _has_committed_payload(checkpoint_path: Path) -> bool:
 def _is_loadable_checkpoint(checkpoint_path: Path) -> bool:
     if not (checkpoint_path / COMPLETED_FILENAME).exists():
         return False
-    if _has_committed_payload(checkpoint_path):
+    if has_committed_payload(checkpoint_path):
         return True
     logger.warning(
         "Ignoring checkpoint at %s: it has a %r marker but its Orbax data was never"

@@ -6,10 +6,6 @@ pub const ENV_GRPC_MTLS_CLIENT_CA_PATH: &str = "GRPC_MTLS_CLIENT_CA_PATH";
 pub const ENV_DUAL_CALL_HARNESS_ENABLED: &str = "VF_DUAL_CALL_HARNESS_ENABLED";
 pub const ENV_FALLBACK_CACHE_SERVE_STALE_ENABLED: &str = "VF_FALLBACK_CACHE_SERVE_STALE_ENABLED";
 pub const ENV_FALLBACK_CACHE_POPULATE_ENABLED: &str = "VF_FALLBACK_CACHE_POPULATE_ENABLED";
-pub const ENV_MEDIA_FALLBACK_CACHE_SERVE_STALE_ENABLED: &str =
-    "VF_MEDIA_FALLBACK_CACHE_SERVE_STALE_ENABLED";
-pub const ENV_MEDIA_FALLBACK_CACHE_POPULATE_ENABLED: &str =
-    "VF_MEDIA_FALLBACK_CACHE_POPULATE_ENABLED";
 
 pub fn dual_call_harness_enabled() -> bool {
     parse_env_flag(std::env::var(ENV_DUAL_CALL_HARNESS_ENABLED).ok().as_deref())
@@ -26,22 +22,6 @@ pub fn fallback_cache_serve_stale_enabled() -> bool {
 pub fn fallback_cache_populate_enabled() -> bool {
     parse_env_flag(
         std::env::var(ENV_FALLBACK_CACHE_POPULATE_ENABLED)
-            .ok()
-            .as_deref(),
-    )
-}
-
-pub fn media_fallback_cache_serve_stale_enabled() -> bool {
-    parse_env_flag(
-        std::env::var(ENV_MEDIA_FALLBACK_CACHE_SERVE_STALE_ENABLED)
-            .ok()
-            .as_deref(),
-    )
-}
-
-pub fn media_fallback_cache_populate_enabled() -> bool {
-    parse_env_flag(
-        std::env::var(ENV_MEDIA_FALLBACK_CACHE_POPULATE_ENABLED)
             .ok()
             .as_deref(),
     )

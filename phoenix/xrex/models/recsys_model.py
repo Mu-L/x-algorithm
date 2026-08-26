@@ -1381,6 +1381,9 @@ def build_metric_masks(
         masks["fresh"] = mask * (1 - delayed)
         masks["delayed_clicked"] = mask * delayed * click_mask
         masks["delayed_non_clicked"] = mask * delayed * (1 - click_mask)
+        masks["fresh_home_website_clicks"] = (
+            masks["fresh"] * home_timeline_mask * website_clicks_objective
+        )
 
     if condition_search_relevance_on_prompt:
         prompt_mask = jnp.any(
@@ -3054,9 +3057,9 @@ class RecsysAggregatedModel(hk.Module):
                 )
 
             target_padding_mask = padding_mask[:, candidate_start_offset:]
-            conversion_keep_mask = batch["candidate_seq"].get("conversion_keep_mask")
-            if conversion_keep_mask is not None:
-                keep = cast_jax(conversion_keep_mask)
+            trained_candidate_mask = batch["candidate_seq"].get("trained_candidate_mask")
+            if trained_candidate_mask is not None:
+                keep = cast_jax(trained_candidate_mask)
                 pad_len = target_padding_mask.shape[1] - keep.shape[1]
                 target_padding_mask = target_padding_mask & jnp.pad(keep, ((0, 0), (0, pad_len)))
 

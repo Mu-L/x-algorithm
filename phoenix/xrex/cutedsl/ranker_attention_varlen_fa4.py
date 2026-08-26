@@ -10,7 +10,6 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.ad_checkpoint import checkpoint_name
 
 
 @dataclasses.dataclass(frozen=True)
@@ -670,8 +669,6 @@ def ranker_attention_varlen_fa4(
         fbs = bs_args[:6]
         valid_bounds = bs_args[12:]
         out, lse = c["fwd_call"](q, k, v, *fbs, *valid_bounds)
-        out = checkpoint_name(out, "attn_outputs")
-        lse = checkpoint_name(lse, "attn_outputs")
         return out, (q, k, v, out, lse, bs_args)
 
     def _attention_bwd(res, g):

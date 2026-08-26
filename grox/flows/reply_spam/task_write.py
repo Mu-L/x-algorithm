@@ -113,6 +113,28 @@ class TaskWriteReplyRankingManhattan(Task):
                 f"Missing user id [_publish_to_reply_ranking_manhattan] {reasoning=} {post.id=} {score=}"
             )
 
+        existing = None
+        try:
+            existing = await ReplyRankingScoreStratoLoader.fetch_reply_ranking_score(
+                post.id
+            )
+        except Exception:
+            logger.warning(
+                f"Failed to fetch existing reply ranking score for {post.id=}, proceeding with write"
+            )
+        if (
+            existing is not None
+            and existing.score is not None
+            and score > existing.score
+        ):
+            Metrics.counter("task.write_reply_ranking_manhattan.skipped.count").add(
+                1, attributes={"reason": "higher_than_existing"}
+            )
+            logger.info(
+                f"[_publish_to_reply_ranking_manhattan] skipping write: new {score=} > existing={existing.score} {post.id=}"
+            )
+            return
+
         if score == 0.0:
             await _apply_reply_spam_label(post.id, post.user.id if post.user else None)
 

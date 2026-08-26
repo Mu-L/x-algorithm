@@ -448,10 +448,6 @@ pub async fn download_dense_and_embeddings(
     let index = index_dense_listing(&prefix, &entries[channel_idx]);
     let (futures, sizes, checksums_buf) =
         build_dense_downloads(&channels[channel_idx], &index, tensors)?;
-    log::info!(
-        "copy_port: downloading dense weights prefix={prefix} futures={}",
-        futures.len()
-    );
     let results =
         run_downloads(futures, rate_limit_bytes_per_sec, max_concurrent_downloads).await?;
     sfence_after_download();
@@ -462,9 +458,17 @@ pub async fn download_dense_and_embeddings(
         .ok()
         .and_then(|v| v.get("created_timestamp")?.as_f64())
         .unwrap_or(0.0);
+    let bytes: u64 = tensors.iter().map(|t| t.buf.len() as u64).sum();
+    let secs = t_all.elapsed().as_secs_f64();
+    let gbs = if secs > 0.0 {
+        bytes as f64 / secs / 1e9
+    } else {
+        0.0
+    };
     log::info!(
-        "copy_port: dense weights loaded prefix={prefix} in {:.2}s",
-        t_all.elapsed().as_secs_f64()
+        "copy_port: dense weights loaded prefix={prefix} bytes={bytes} in {:.2}s ({:.2} GB/s)",
+        secs,
+        gbs
     );
 
     let prefix_slash = if prefix.ends_with('/') {
@@ -485,10 +489,6 @@ pub async fn download_dense_and_embeddings(
         })
         .collect();
 
-    log::info!(
-        "copy_port: downloading emb_table prefix={prefix_slash} bytes={}",
-        emb.len()
-    );
     let t_emb = Instant::now();
     let emb_ck = download_sharded_with_channels(
         &channels,
@@ -500,10 +500,17 @@ pub async fn download_dense_and_embeddings(
         max_concurrent_downloads,
     )
     .await?;
+    let secs = t_emb.elapsed().as_secs_f64();
+    let gbs = if secs > 0.0 {
+        emb.len() as f64 / secs / 1e9
+    } else {
+        0.0
+    };
     log::info!(
-        "copy_port: emb_table loaded bytes={} in {:.2}s",
+        "copy_port: emb_table loaded bytes={} in {:.2}s ({:.2} GB/s)",
         emb.len(),
-        t_emb.elapsed().as_secs_f64()
+        secs,
+        gbs
     );
 
     let pe_ck = if let Some(pe_buf) = pe.filter(|b| !b.is_empty()) {

@@ -136,13 +136,14 @@ impl HydrationPipeline {
         socialgraph_client: Arc<dyn SocialgraphClient + Send + Sync>,
         safety_label_source: Arc<SafetyLabelSource>,
         fallback_cache_mode: FallbackCacheMode,
-        media_fallback_cache_mode: FallbackCacheMode,
     ) -> Self {
         Self {
             viewer_hydrator: ViewerHydrator {
                 gizmoduck_client: gizmoduck_client.clone(),
             },
-            tes_hydrator: TesHydrator::new(tes_client.clone(), media_fallback_cache_mode),
+            tes_hydrator: TesHydrator {
+                tes_client: tes_client.clone(),
+            },
             gizmoduck_author_hydrator: GizmoduckAuthorHydrator::new(
                 GizmoduckLookup::new(gizmoduck_client),
                 fallback_cache_mode,

@@ -166,9 +166,9 @@ def pack_batch(
     rng: np.random.Generator | None,
     block_size: int = 128,
 ) -> RecsysFeaturesBatch:
-    _ckm = batch["candidate_seq"].get("conversion_keep_mask")
-    assert _ckm is None or bool(np.asarray(_ckm).all()), (
-        "conversion_keep_mask with masked candidates is not supported with sequence packing"
+    _tcm = batch["candidate_seq"].get("trained_candidate_mask")
+    assert _tcm is None or bool(np.asarray(_tcm).all()), (
+        "trained_candidate_mask with masked candidates is not supported with sequence packing"
     )
 
     read_bsz_per_process = batch["user_hashes"].shape[0]

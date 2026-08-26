@@ -157,17 +157,19 @@ pub fn resolve_layer() -> DarkLayer {
         return Either::Right(tower::layer::util::Identity::new());
     }
 
+    let workload = std::env::var("WORKLOAD_NAME").ok();
     let max_ordinal: Option<u32> = std::env::var("DARK_TRAFFIC_MAX_ORDINAL")
         .ok()
         .and_then(|s| s.parse().ok());
     let ordinal: Option<u32> = std::env::var("ORDINAL_NUMBER")
         .ok()
         .and_then(|s| s.parse().ok());
-    if !should_enable(ordinal, max_ordinal) {
+    if !should_mirror(workload.as_deref(), ordinal, max_ordinal) {
         info!(
+            ?workload,
             ?ordinal,
             ?max_ordinal,
-            "dark_traffic: disabled (ordinal >= max)"
+            "dark_traffic: disabled (not a mirror host)"
         );
         return Either::Right(tower::layer::util::Identity::new());
     }
@@ -200,41 +202,62 @@ pub fn resolve_layer() -> DarkLayer {
     Either::Left(DarkTrafficLayer::new(config))
 }
 
-fn should_enable(ordinal: Option<u32>, max_ordinal: Option<u32>) -> bool {
-    let max = max_ordinal.unwrap_or(1);
-    let ord = ordinal.unwrap_or(u32::MAX);
-    ord < max
+fn should_mirror(workload: Option<&str>, ordinal: Option<u32>, max_ordinal: Option<u32>) -> bool {
+    let Some(workload) = workload else {
+        return false;
+    };
+    if workload.ends_with("-canary") {
+        return false;
+    }
+    let Some(ord) = ordinal else {
+        return false;
+    };
+    ord < max_ordinal.unwrap_or(1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const PROD: Option<&str> = Some("xai-vf-service");
+    const CANARY: Option<&str> = Some("xai-vf-service-canary");
+
     #[test]
     fn default_only_pod0() {
-        assert!(should_enable(Some(0), None));
-        assert!(!should_enable(Some(1), None));
-        assert!(!should_enable(Some(99), None));
+        assert!(should_mirror(PROD, Some(0), None));
+        assert!(!should_mirror(PROD, Some(1), None));
+        assert!(!should_mirror(PROD, Some(99), None));
     }
 
     #[test]
     fn no_ordinal_disables() {
-        assert!(!should_enable(None, None));
-        assert!(!should_enable(None, Some(3)));
+        assert!(!should_mirror(PROD, None, None));
+        assert!(!should_mirror(PROD, None, Some(3)));
     }
 
     #[test]
     fn max_ordinal_threshold() {
-        assert!(should_enable(Some(0), Some(3)));
-        assert!(should_enable(Some(1), Some(3)));
-        assert!(should_enable(Some(2), Some(3)));
-        assert!(!should_enable(Some(3), Some(3)));
-        assert!(!should_enable(Some(4), Some(3)));
+        assert!(should_mirror(PROD, Some(0), Some(3)));
+        assert!(should_mirror(PROD, Some(1), Some(3)));
+        assert!(should_mirror(PROD, Some(2), Some(3)));
+        assert!(!should_mirror(PROD, Some(3), Some(3)));
+        assert!(!should_mirror(PROD, Some(4), Some(3)));
     }
 
     #[test]
     fn max_ordinal_zero_disables_all() {
-        assert!(!should_enable(Some(0), Some(0)));
+        assert!(!should_mirror(PROD, Some(0), Some(0)));
+    }
+
+    #[test]
+    fn canary_never_mirrors() {
+        assert!(!should_mirror(CANARY, Some(0), Some(11)));
+        assert!(!should_mirror(CANARY, Some(0), Some(u32::MAX)));
+    }
+
+    #[test]
+    fn missing_workload_name_fails_closed() {
+        assert!(!should_mirror(None, Some(0), Some(11)));
     }
 
     #[test]

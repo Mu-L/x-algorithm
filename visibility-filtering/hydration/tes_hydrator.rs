@@ -1,5 +1,4 @@
 use crate::hydration::batch::TweetHydrationBatch;
-use crate::hydration::fallback_cache::{FallbackCache, FallbackCacheMode};
 use crate::hydration::metrics::{record_batch_size, timed_keyed_rpc, timed_results};
 use crate::models::{
     CoreFeature, MediaFeature, NsfwFeature, TakedownFeature, TweetCandidateInput, TweetFeatures,
@@ -14,11 +13,9 @@ use xai_core_entities::tweet_entity_service_client::TESClient;
 
 const CLIENT_TIMEOUT: Duration = Duration::from_millis(150);
 const CLIENT: &str = "tes";
-const CACHE_CAPACITY: usize = 1_000_000;
 
 pub struct TesHydrator {
     pub tes_client: Arc<dyn TESClient + Send + Sync>,
-    fallback_cache: FallbackCache<TweetId, MediaFeature>,
 }
 
 #[derive(Default)]
@@ -47,16 +44,6 @@ impl TweetHydration {
 }
 
 impl TesHydrator {
-    pub(crate) fn new(
-        tes_client: Arc<dyn TESClient + Send + Sync>,
-        cache_mode: FallbackCacheMode,
-    ) -> Self {
-        Self {
-            tes_client,
-            fallback_cache: FallbackCache::new("media", CACHE_CAPACITY, cache_mode),
-        }
-    }
-
     pub async fn fetch_pure_core(
         &self,
         tweet_ids: &[TweetId],
@@ -88,10 +75,6 @@ impl TesHydrator {
         tweet_ids: &[TweetId],
         safety_level: SafetyLevel,
     ) -> TweetHydration {
-        let generation = self
-            .fallback_cache
-            .enabled()
-            .then(|| self.fallback_cache.begin_request());
         let candidate_count_by_key = candidates_per_tweet(tweet_ids);
         let raw_ids: Vec<u64> = candidate_count_by_key.keys().copied().collect();
 
@@ -171,14 +154,6 @@ impl TesHydrator {
             ),
         );
 
-        let media = media_entities.map_keys(TweetId).map(media_feature);
-        let media = if let Some(generation) = generation {
-            self.fallback_cache
-                .resolve_hydration_batch(generation, media)
-        } else {
-            media
-        };
-
         TweetHydration {
             nullcast: nullcast.map_keys(TweetId),
             community: community.map_keys(TweetId),
@@ -187,7 +162,7 @@ impl TesHydrator {
             has_takedown: has_takedown.map_keys(TweetId),
             takedown_reasons: takedown_reasons.map_keys(TweetId),
             edit_control: edit_control.map_keys(TweetId),
-            media,
+            media: media_entities.map_keys(TweetId).map(media_feature),
         }
     }
 
@@ -284,10 +259,7 @@ fn media_feature(entities: MediaEntities) -> MediaFeature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hydration::batch::Hydrated;
     use crate::models::{resolve_candidate, RawCandidate};
-    use anyhow::Result;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use xai_core_entities::entities::{MediaEntity, PureCoreData};
     use xai_core_entities::tweet_entity_service_client::MockTESClient;
     use xai_x_thrift::media_information::{AdditionalMetadata, Restrictions};
@@ -318,10 +290,9 @@ mod tests {
     }
 
     fn hydrator() -> TesHydrator {
-        TesHydrator::new(
-            Arc::new(MockTESClient::default()),
-            FallbackCacheMode::Disabled,
-        )
+        TesHydrator {
+            tes_client: Arc::new(MockTESClient::default()),
+        }
     }
 
     #[test]
@@ -511,264 +482,5 @@ mod tests {
         assert!(f.core.text.is_empty());
         assert_eq!(f.core.created_at_secs, None);
         assert!(!f.media.has_media);
-    }
-
-    struct MediaFailingAfterFirstClient {
-        inner: MockTESClient,
-        media_calls: AtomicUsize,
-    }
-
-    impl MediaFailingAfterFirstClient {
-        fn with_media(media_entities: HashMap<u64, Option<MediaEntities>>) -> Self {
-            Self {
-                inner: MockTESClient {
-                    media_entities,
-                    ..Default::default()
-                },
-                media_calls: AtomicUsize::new(0),
-            }
-        }
-    }
-
-    #[tonic::async_trait]
-    impl TESClient for MediaFailingAfterFirstClient {
-        async fn get_tweet_media_entities(
-            &self,
-            tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<MediaEntities>>> {
-            if self.media_calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                self.inner.get_tweet_media_entities(tweet_ids).await
-            } else {
-                tweet_ids
-                    .into_iter()
-                    .map(|id| (id, Err(anyhow::anyhow!("tes unavailable"))))
-                    .collect()
-            }
-        }
-
-        async fn get_nullcast(&self, tweet_ids: Vec<u64>) -> HashMap<u64, Result<Option<bool>>> {
-            self.inner.get_nullcast(tweet_ids).await
-        }
-
-        async fn get_community(&self, tweet_ids: Vec<u64>) -> HashMap<u64, Result<Option<i64>>> {
-            self.inner.get_community(tweet_ids).await
-        }
-
-        async fn get_nsfw_user(&self, tweet_ids: Vec<u64>) -> HashMap<u64, Result<Option<bool>>> {
-            self.inner.get_nsfw_user(tweet_ids).await
-        }
-
-        async fn get_nsfw_admin(&self, tweet_ids: Vec<u64>) -> HashMap<u64, Result<Option<bool>>> {
-            self.inner.get_nsfw_admin(tweet_ids).await
-        }
-
-        async fn get_has_takedown(
-            &self,
-            tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<bool>>> {
-            self.inner.get_has_takedown(tweet_ids).await
-        }
-
-        async fn get_takedown_reasons(
-            &self,
-            tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<Vec<TakedownReason>>>> {
-            self.inner.get_takedown_reasons(tweet_ids).await
-        }
-
-        async fn get_edit_control(
-            &self,
-            tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<EditControl>>> {
-            self.inner.get_edit_control(tweet_ids).await
-        }
-
-        async fn get_tweet_core_datas(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<PureCoreData>>> {
-            unreachable!()
-        }
-
-        async fn get_subscription_author_ids(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<u64>>> {
-            unreachable!()
-        }
-
-        async fn get_quoted_tweets(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<xai_core_entities::entities::QuotedTweet>>> {
-            unreachable!()
-        }
-
-        async fn get_reaction_context(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<xai_core_entities::entities::ReactionContext>>> {
-            unreachable!()
-        }
-
-        async fn get_min_video_durations(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<i64>>> {
-            unreachable!()
-        }
-
-        async fn get_media_count(&self, _tweet_ids: Vec<u64>) -> HashMap<u64, Result<Option<i64>>> {
-            unreachable!()
-        }
-
-        async fn get_takedown_country_codes(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<Vec<String>>>> {
-            unreachable!()
-        }
-
-        async fn get_language_code(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<String>>> {
-            unreachable!()
-        }
-
-        async fn get_api_counts(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<xai_core_entities::entities::ApiCounts>>> {
-            unreachable!()
-        }
-
-        async fn get_is_article(&self, _tweet_ids: Vec<u64>) -> HashMap<u64, Result<Option<bool>>> {
-            unreachable!()
-        }
-
-        async fn get_is_premium(&self, _tweet_ids: Vec<u64>) -> HashMap<u64, Result<Option<bool>>> {
-            unreachable!()
-        }
-
-        async fn get_urls(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<xai_core_entities::entities::UrlEntities>>> {
-            unreachable!()
-        }
-
-        async fn get_exclusive_controls(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<xai_core_entities::entities::ExclusiveTweetControl>>>
-        {
-            unreachable!()
-        }
-
-        async fn get_trusted_friends_controls(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<xai_core_entities::entities::TrustedFriendsControl>>>
-        {
-            unreachable!()
-        }
-
-        async fn get_grok_post_ids(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Option<String>>> {
-            unreachable!()
-        }
-
-        async fn get_status_perspectives(
-            &self,
-            _tweet_ids: Vec<u64>,
-            _metadata: Option<&tonic::metadata::MetadataMap>,
-        ) -> HashMap<u64, Result<Option<xai_x_thrift::tweets::ApiPerspective>>> {
-            unreachable!()
-        }
-
-        async fn get_api_media_entities(
-            &self,
-            _tweet_ids: Vec<u64>,
-            _metadata: Option<&tonic::metadata::MetadataMap>,
-        ) -> HashMap<u64, Result<Option<Vec<xai_x_thrift::entities::ApiMediaEntity>>>> {
-            unreachable!()
-        }
-
-        async fn get_escherbird_entity_annotations(
-            &self,
-            _tweet_ids: Vec<u64>,
-        ) -> HashMap<
-            u64,
-            Result<Option<Vec<xai_core_entities::entities::EscherbirdEntityAnnotation>>>,
-        > {
-            unreachable!()
-        }
-    }
-
-    #[tokio::test]
-    async fn media_stale_recovery_respects_cache_mode() {
-        let tweet_ids = vec![TweetId(1)];
-        for (mode, serves_stale) in [
-            (FallbackCacheMode::ServeStale, true),
-            (FallbackCacheMode::Shadow, false),
-            (FallbackCacheMode::Disabled, false),
-        ] {
-            let hydrator = TesHydrator::new(
-                Arc::new(MediaFailingAfterFirstClient::with_media(HashMap::from([(
-                    1,
-                    Some(vec![dmca_media_entity(true)]),
-                )]))),
-                mode,
-            );
-            let first = hydrator
-                .hydrate_tweets(&tweet_ids, SafetyLevel::TimelineHome)
-                .await;
-            assert!(first.media.get_or_default(&TweetId(1)).has_dmca_media);
-
-            let second = hydrator
-                .hydrate_tweets(&tweet_ids, SafetyLevel::TimelineHome)
-                .await;
-            if serves_stale {
-                let media = second.media.get_or_default(&TweetId(1));
-                assert!(media.has_media);
-                assert!(media.has_dmca_media);
-            } else {
-                assert!(matches!(
-                    second.media.hydrated(&TweetId(1)),
-                    Some(Hydrated::Failed(_))
-                ));
-                assert!(!second.media.get_or_default(&TweetId(1)).has_dmca_media);
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn no_media_tweets_cache_default_entries_that_serve_stale() {
-        let tweet_ids = vec![TweetId(1)];
-        let hydrator = TesHydrator::new(
-            Arc::new(MediaFailingAfterFirstClient::with_media(HashMap::from([(
-                1,
-                Some(Vec::new()),
-            )]))),
-            FallbackCacheMode::ServeStale,
-        );
-
-        let first = hydrator
-            .hydrate_tweets(&tweet_ids, SafetyLevel::TimelineHome)
-            .await;
-        assert!(!first.media.get_or_default(&TweetId(1)).has_media);
-
-        let second = hydrator
-            .hydrate_tweets(&tweet_ids, SafetyLevel::TimelineHome)
-            .await;
-        assert!(matches!(
-            second.media.hydrated(&TweetId(1)),
-            Some(Hydrated::Found(_))
-        ));
-        assert!(!second.media.get_or_default(&TweetId(1)).has_media);
-        assert_eq!(second.media.failed_count(), 0);
     }
 }

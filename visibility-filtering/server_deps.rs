@@ -98,13 +98,6 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
     } else {
         FallbackCacheMode::Disabled
     };
-    let media_fallback_cache_mode = if crate::config::media_fallback_cache_serve_stale_enabled() {
-        FallbackCacheMode::ServeStale
-    } else if crate::config::media_fallback_cache_populate_enabled() {
-        FallbackCacheMode::Shadow
-    } else {
-        FallbackCacheMode::Disabled
-    };
 
     let tes_client: Arc<
         dyn xai_core_entities::tweet_entity_service_client::TESClient + Send + Sync,
@@ -208,7 +201,6 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
         sg_client,
         safety_label_source.clone(),
         fallback_cache_mode,
-        media_fallback_cache_mode,
     );
     let policies = crate::rules::Policies::new();
     let (home_rule_count, recommendations_rule_count) = policies.rule_counts();
@@ -219,7 +211,6 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
     info!(
         hydrator_count = 5,
         ?fallback_cache_mode,
-        ?media_fallback_cache_mode,
         home_rule_count,
         recommendations_rule_count,
         "VFServer initialized with prod clients"

@@ -27,6 +27,10 @@ class ReplyRankingScoreStratoLoader:
     reply_ranking_v2_kafka_strato = StratoReplyRankingScoreV2Kafka()
 
     @classmethod
+    async def fetch_reply_ranking_score(cls, post_id: str) -> ReplyRankingScore | None:
+        return await cls.strato.fetch(int(post_id))
+
+    @classmethod
     async def save_reply_ranking_score(
         cls, post_id: str, reply_ranking_score: ReplyRankingScore
     ):
