@@ -1,4 +1,4 @@
-# mirrored from GrowthBook dynamic config; last sync 2026-08-25T16:15:48Z
+# mirrored from GrowthBook dynamic config; last sync 2026-08-26T16:31:18Z
 
 for_entity: user
 
@@ -45,6 +45,8 @@ rules:
   - id: panda_reports_embedding_v10_rough_spam
     when: '"panda_reports_embedding_v10_rough_spam" in score.labels'
     then: { kind: act_suspend_user, perm: false, policy: "PlatformManipulation" }
+
+
 
   - id: already_spam_high_recall_labeled_llm_slop
     when: '"llm_slop_user" in score.labels && "SpamHighRecall" in user.labels'

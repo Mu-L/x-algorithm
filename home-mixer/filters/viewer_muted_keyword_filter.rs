@@ -280,6 +280,24 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_cjk_keyword_whole_token_only() {
+        let filter = ViewerMutedKeywordFilter::new();
+        let query = create_test_query(vec!["京都".to_string()]);
+
+        let candidates = vec![
+            create_test_candidate(1, "東京都に行くのが楽しみ"),
+            create_test_candidate(2, "I visited 京都 last week"),
+            create_test_candidate(3, "unrelated content"),
+        ];
+
+        let result = filter.filter(&query, candidates);
+
+        assert_eq!(result.removed.len(), 1);
+        assert_eq!(result.removed[0].tweet_id, 2);
+        assert_eq!(result.kept.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_punctuation_handling() {
         let filter = ViewerMutedKeywordFilter::new();
         let query = create_test_query(vec!["bitcoin".to_string()]);

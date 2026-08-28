@@ -318,9 +318,7 @@ impl CheckpointProxy {
 
         let mut handles = Vec::with_capacity(channels.len());
 
-        for (ch_idx, (channel, ch_entries)) in
-            channels.iter().zip(deduped_entries.into_iter()).enumerate()
-        {
+        for (ch_idx, (channel, ch_entries)) in channels.iter().zip(deduped_entries).enumerate() {
             if ch_entries.is_empty() {
                 continue;
             }

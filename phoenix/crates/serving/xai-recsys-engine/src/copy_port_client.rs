@@ -2,6 +2,7 @@
 // Copyright 2026 X.AI Corp.
 use std::cmp;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::mem;
 use std::slice;
 #[cfg(target_os = "linux")]
@@ -466,7 +467,7 @@ pub async fn download_dense_and_embeddings(
         0.0
     };
     log::info!(
-        "copy_port: dense weights loaded prefix={prefix} bytes={bytes} in {:.2}s ({:.2} GB/s)",
+        "copy_port: dense weights loaded bytes={bytes} in {:.2}s ({:.2} GB/s)",
         secs,
         gbs
     );
@@ -556,10 +557,12 @@ async fn download_sharded_with_channels(
 ) -> Result<u32, CopyPortError> {
     let layout = ShardedLayout::from_listing(name, entries)?;
     layout.check_buffer_size(name, buf.len())?;
-    let (futures, expected) = spawn_sharded_downloads(&layout, prefix, name, channels, buf).await?;
+    let (futures, expected, schedule) =
+        spawn_sharded_downloads(&layout, prefix, name, channels, buf).await?;
     let concurrent = max_concurrent_downloads.or(Some((channels.len() / 2).max(1)));
     let results = run_downloads(futures, rate_limit_bytes_per_sec, concurrent).await?;
     sfence_after_download();
+    let results = results_in_piece_order(results, &schedule)?;
     combine_transfer_checksums(&results, &expected)
 }
 
@@ -607,11 +610,12 @@ async fn download_embedding_table_with_conns(
         .await;
     }
 
-    let (futures, expected) =
+    let (futures, expected, schedule) =
         spawn_sharded_downloads(&layout, &prefix, name, &channels, buf).await?;
     let concurrent = max_concurrent_downloads.or(Some((channels.len() / 2).max(1)));
     let results = run_downloads(futures, rate_limit_bytes_per_sec, concurrent).await?;
     sfence_after_download();
+    let results = results_in_piece_order(results, &schedule)?;
     combine_transfer_checksums(&results, &expected)
 }
 
@@ -804,6 +808,52 @@ pub(crate) fn classify_shard_ownership(
     )))
 }
 
+pub(crate) fn shuffle_sharded_schedule(n: usize, name: &str) -> Vec<usize> {
+    let mut schedule: Vec<usize> = (0..n).collect();
+    if n <= 1 {
+        return schedule;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Ok(id) = std::env::var("POD_NAME").or_else(|_| std::env::var("HOSTNAME")) {
+        id.hash(&mut hasher);
+    }
+    name.hash(&mut hasher);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(hasher.finish());
+    schedule.shuffle(&mut rng);
+    schedule
+}
+
+pub(crate) fn restore_piece_order<T>(shuffled: Vec<T>, schedule: &[usize]) -> Option<Vec<T>> {
+    if shuffled.len() != schedule.len() {
+        return None;
+    }
+    let mut out: Vec<Option<T>> = (0..schedule.len()).map(|_| None).collect();
+    for (item, &orig) in shuffled.into_iter().zip(schedule) {
+        if orig >= out.len() || out[orig].is_some() {
+            return None;
+        }
+        out[orig] = Some(item);
+    }
+    out.into_iter().collect()
+}
+
+fn results_in_piece_order(
+    results: Vec<(usize, u32)>,
+    schedule: &[usize],
+) -> Result<Vec<(usize, u32)>, CopyPortError> {
+    if results
+        .iter()
+        .any(|(sent, _)| *sent == TRANSFER_FAILED_SENTINEL)
+    {
+        return Err(CopyPortError::TransferFailed(
+            "gRPC/RDMA transfer failed (check Rust logs)".into(),
+        ));
+    }
+    restore_piece_order(results, schedule).ok_or_else(|| {
+        CopyPortError::TransferFailed("shuffled download result count/order mismatch".into())
+    })
+}
+
 pub(crate) fn combine_transfer_checksums(
     results: &[(usize, u32)],
     expected: &[usize],
@@ -891,7 +941,7 @@ async fn spawn_sharded_downloads(
     name: &str,
     channels: &[Channel],
     buf: &mut [u8],
-) -> Result<(Vec<TransferFuture>, Vec<usize>), CopyPortError> {
+) -> Result<(Vec<TransferFuture>, Vec<usize>, Vec<usize>), CopyPortError> {
     let name_prefix = format!("{name}/c/");
     let piece = layout.piece_bytes;
 
@@ -925,6 +975,18 @@ async fn spawn_sharded_downloads(
             replicated_send_ranges(*total_pieces, channels.len(), peer_send_max_pieces(piece))
         }
     };
+
+    let schedule = match &layout.ownership {
+        ShardOwnership::Sharded { .. } => shuffle_sharded_schedule(ranges.len(), name),
+        ShardOwnership::Replicated { .. } => (0..ranges.len()).collect(),
+    };
+    if matches!(layout.ownership, ShardOwnership::Sharded { .. }) && ranges.len() > 1 {
+        log::info!(
+            "copy_port: shard schedule shuffled name={name} n={} first={:?}",
+            schedule.len(),
+            &schedule[..schedule.len().min(8)]
+        );
+    }
 
     #[cfg(target_os = "linux")]
     let (contexts, devicez, mrx) = {
@@ -967,11 +1029,10 @@ async fn spawn_sharded_downloads(
         (contexts, devicez, mrx)
     };
 
+    let expected: Vec<usize> = ranges.iter().map(|&(_, a, b)| (b - a) * piece).collect();
     let mut futures = Vec::with_capacity(ranges.len());
-    let mut expected = Vec::with_capacity(ranges.len());
-    for (i, &(idx, a, b)) in ranges.iter().enumerate() {
-        #[cfg(not(target_os = "linux"))]
-        let _ = i;
+    for &i in &schedule {
+        let (idx, a, b) = ranges[i];
         let n = b - a;
         let slice = &mut buf[a * piece..b * piece];
         let slice: &'static mut [u8] =
@@ -988,9 +1049,8 @@ async fn spawn_sharded_downloads(
             (devicez[i].clone(), contexts.clone(), mrx[i].clone()),
         ));
         futures.push(fut);
-        expected.push(n * piece);
     }
-    Ok((futures, expected))
+    Ok((futures, expected, schedule))
 }
 
 #[cfg(test)]
@@ -1132,6 +1192,49 @@ mod tests {
         assert!(combine_transfer_checksums(&[(64, 1)], &[64]).is_ok());
         assert!(combine_transfer_checksums(&[(63, 1)], &[64]).is_err());
         assert!(combine_transfer_checksums(&[(TRANSFER_FAILED_SENTINEL, 1)], &[64]).is_err());
+    }
+
+    #[test]
+    fn shuffle_schedule_is_stable_permutation() {
+        let a = shuffle_sharded_schedule(32, "emb_table");
+        let b = shuffle_sharded_schedule(32, "emb_table");
+        assert_eq!(a, b);
+        let mut sorted = a.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..32).collect::<Vec<_>>());
+        let c = shuffle_sharded_schedule(32, "post_embeddings");
+        assert_ne!(a, c);
+        assert_ne!(a, (0..32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn restore_piece_order_inverts_schedule() {
+        let schedule = vec![3, 0, 2, 1];
+        let shuffled = vec!['d', 'a', 'c', 'b'];
+        assert_eq!(
+            restore_piece_order(shuffled, &schedule).unwrap(),
+            vec!['a', 'b', 'c', 'd']
+        );
+        assert!(restore_piece_order(vec![1, 2], &[0, 1, 2]).is_none());
+        assert!(restore_piece_order(vec![1, 2, 3], &[0, 0, 1]).is_none());
+    }
+
+    #[test]
+    fn combine_after_restore_matches_piece_order() {
+        let piece_order = vec![(10, 11u32), (10, 22), (10, 33)];
+        let expected = vec![10usize, 10, 10];
+        let direct = combine_transfer_checksums(&piece_order, &expected).unwrap();
+        let schedule = vec![2, 0, 1];
+        let shuffled = vec![piece_order[2], piece_order[0], piece_order[1]];
+        let restored = restore_piece_order(shuffled.clone(), &schedule).unwrap();
+        assert_eq!(
+            combine_transfer_checksums(&restored, &expected).unwrap(),
+            direct
+        );
+        assert_ne!(
+            combine_transfer_checksums(&shuffled, &expected).unwrap(),
+            direct
+        );
     }
 
     #[test]

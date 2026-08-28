@@ -172,8 +172,9 @@ lazy_static! {
             "recsys_engine_client_server_network_delay_ms",
             "Approximate client->server network delay (ms): wall-clock delta \
              between the caller's x-request-send-time-ms (stamped just before \
-             the request hits the wire) and server handler entry.",
-            &["client"],
+             the request hits the wire) and server handler entry. Labels: \
+             client, src_dc.",
+            &["client", "src_dc"],
             buckets
         )
         .unwrap()
@@ -365,7 +366,7 @@ pub fn export() {
     let _ = TOKENS_PER_ROW.with_label_values(&["history"]);
     let _ = TOKENS_PER_ROW.with_label_values(&["candidate"]);
     let _ = NOT_READY_ARRIVAL_SECONDS.with_label_values(&["unknown"]);
-    let _ = CLIENT_SERVER_NETWORK_DELAY.with_label_values(&["unknown"]);
+    let _ = CLIENT_SERVER_NETWORK_DELAY.with_label_values(&["unknown", "unknown"]);
     let _ = ADMISSION_BUDGET_REMAINING.with_label_values(&["unknown"]);
     NUM_REQUESTS_REJECTED
         .with_label_values(&["deadline_admission", "unknown"])
@@ -385,8 +386,9 @@ pub fn record_client_server_network_delay<T>(request: &Request<T>, client: &str)
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+    let src_dc = src_dc_label(request);
     CLIENT_SERVER_NETWORK_DELAY
-        .with_label_values(&[client])
+        .with_label_values(&[client, &src_dc])
         .observe(now_ms.saturating_sub(sent_ms) as f64);
 }
 
@@ -704,6 +706,17 @@ mod tests {
 
         let absent = Request::new(());
         assert_eq!(src_dc_label(&absent), "unknown");
+    }
+
+    #[test]
+    fn network_delay_records_under_client_and_src_dc() {
+        let mut req = Request::new(());
+        req.metadata_mut()
+            .insert("x-request-send-time-ms", "1".parse().unwrap());
+        req.metadata_mut().insert("src_dc", "pdxa".parse().unwrap());
+        record_client_server_network_delay(&req, "example-service/ranking-xds");
+        let _ =
+            CLIENT_SERVER_NETWORK_DELAY.with_label_values(&["example-service/ranking-xds", "pdxa"]);
     }
 
     #[test]

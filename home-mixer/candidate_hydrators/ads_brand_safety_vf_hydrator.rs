@@ -144,6 +144,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for AdsBrandSafetyVfHydrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::query::ScoredPostsQuery;
     use xai_safety_label_store::types::SafetyLabelMap;
     use xai_visibility_filtering::tweet_safety_label::{SafetyLabelFailure, SafetyLabelsBatch};
     use xai_x_thrift::tweet_safety_label::{SafetyLabel, SafetyLabelType};
@@ -480,7 +481,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nsfw_author_escalates_to_medium_risk() {
+    async fn nsfw_author_escalates_to_high_risk() {
         let mut labels: SafetyLabelMap = HashMap::new();
         labels.insert(SafetyLabelType::GROK_SFA, SafetyLabel::default());
         let client = Arc::new(FakeVfClient {

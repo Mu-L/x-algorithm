@@ -57,6 +57,10 @@ class CheckpointConfig(Config):
 
     restore_concurrent_gb: int | None = 32
 
+    restore_streamed: bool = False
+
+    restore_window_gb: float | None = None
+
     checkpoint_ttl: int = datetime.timedelta(weeks=2).total_seconds()
 
     replication_mode: Literal["full", "dp_only", "none"] = "dp_only"

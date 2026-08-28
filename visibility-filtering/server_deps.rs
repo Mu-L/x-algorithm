@@ -9,6 +9,7 @@ use crate::rules::{SafetyLevel, Verdict};
 use crate::safety_label_source::lookup::RemoteSource;
 use crate::safety_label_source::manhattan::ManhattanSource;
 use crate::safety_label_source::twemcache::TwemcacheSource;
+use crate::safety_label_source::warmer::{SampledWarmer, StratoWarmFetcher, Warmer};
 use crate::safety_label_source::{ManhattanLabelFetcher, MhLabelClient, SafetyLabelSource};
 use crate::server::VFServer;
 use std::future::Future;
@@ -114,10 +115,7 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
         .expect("Failed to initialize TES client"),
     );
 
-    let gizmoduck_client_id = format!(
-        "visibility-filtering-service.{}",
-        std::env::var("APP_ENV").unwrap_or_else(|_| "prod".to_string())
-    );
+    let gizmoduck_client_id = crate::config::gizmoduck_client_id();
     let gizmoduck_client: Arc<
         dyn xai_core_entities::gizmoduck_client::GizmoduckClient + Send + Sync,
     > = Arc::new(
@@ -165,11 +163,12 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
         .expect("Failed to initialize MhLabelClient"),
     );
 
+    let twemcache_client_name = crate::config::twemcache_client_name();
     let twemcache = Arc::new(
         init_client_with_retry("twemcache", init_deadline, || {
             crate::twemcache::TwemcacheClient::new_with_tls_paths(
                 CACHE_PATH,
-                "visibility-filtering-service",
+                twemcache_client_name.clone(),
                 datacenter,
                 &S2S_CHAIN_PATH,
                 &S2S_CRT_PATH,
@@ -190,9 +189,15 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
     warm_cache(&twemcache).await;
     warm_manhattan(mh_label_client.as_ref()).await;
 
+    let cache_warmer = build_cache_warmer(datacenter, init_deadline).await;
+
     let twemcache_source = Arc::new(TwemcacheSource::new(twemcache));
     let manhattan_source = Arc::new(ManhattanSource::new(mh_label_client));
-    let remote = Arc::new(RemoteSource::new(twemcache_source, manhattan_source));
+    let mut remote = RemoteSource::new(twemcache_source, manhattan_source);
+    if let Some(warmer) = cache_warmer {
+        remote = remote.with_warmer(warmer);
+    }
+    let remote = Arc::new(remote);
     let safety_label_source = Arc::new(SafetyLabelSource::new(remote));
 
     let hydration_pipeline = HydrationPipeline::new(
@@ -258,6 +263,49 @@ async fn build_reference_compare_harness(
         .expect("Failed to initialize Strato VF client (reference comparator)"),
     );
     Some(Arc::new(ReferenceCompareHarness::new(strato, datacenter)))
+}
+
+const CACHE_WARM_REQUEST_TIMEOUT_MS: u64 = 500;
+
+async fn build_cache_warmer(
+    datacenter: &str,
+    init_deadline: tokio::time::Instant,
+) -> Option<Arc<dyn Warmer>> {
+    let sample_pct = crate::config::cache_warm_sample_pct();
+    if sample_pct == 0 {
+        return None;
+    }
+
+    let client_id = format!(
+        "visibility-filtering-service.{}",
+        std::env::var("APP_ENV").unwrap_or_else(|_| "prod".to_string())
+    );
+    let grpc = init_client_with_retry("strato_cache_warm", init_deadline, || {
+        let config = xai_strato::StratoGrpcConfig {
+            ca_cert_path: S2S_CHAIN_PATH.clone(),
+            client_cert_path: S2S_CRT_PATH.clone(),
+            client_key_path: S2S_KEY_PATH.clone(),
+            num_endpoints: Some(12),
+            connect_timeout_ms: 400,
+            request_timeout_ms: CACHE_WARM_REQUEST_TIMEOUT_MS,
+            client_id: Some(client_id.clone()),
+            service_url: format!("stratostore.stratoserver.prod.{datacenter}.s2s.twttr.net"),
+            zone: datacenter.to_string(),
+            ..Default::default()
+        };
+        async move {
+            xai_strato::StratoGrpc::new(config)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await
+    .expect("Failed to initialize Strato cache-warm client");
+    info!(sample_pct, "L2 cache warmer enabled");
+    Some(SampledWarmer::spawn(
+        Arc::new(StratoWarmFetcher::new(grpc)),
+        sample_pct,
+    ))
 }
 
 const TES_STRATO_REQUEST_TIMEOUT_MS: u64 = 100;

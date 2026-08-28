@@ -976,6 +976,7 @@ pub fn load_tensor_no_resharding<'py>(
 ) -> PyResult<Py<PyTuple>> {
     use crate::copy_port_client::{
         ShardOwnership, classify_shard_ownership, peer_send_max_pieces, replicated_send_ranges,
+        restore_piece_order, shuffle_sharded_schedule,
     };
 
     let runtime = runtime::Builder::new_multi_thread()
@@ -1057,6 +1058,18 @@ pub fn load_tensor_no_resharding<'py>(
         ),
     };
 
+    let schedule = match &ownership {
+        ShardOwnership::Sharded { .. } => shuffle_sharded_schedule(ranges.len(), &tensor_name),
+        ShardOwnership::Replicated { .. } => (0..ranges.len()).collect(),
+    };
+    if matches!(ownership, ShardOwnership::Sharded { .. }) && ranges.len() > 1 {
+        log::info!(
+            "copy_port: shard schedule shuffled name={tensor_name} n={} first={:?}",
+            schedule.len(),
+            &schedule[..schedule.len().min(8)]
+        );
+    }
+
     #[cfg(target_os = "linux")]
     let (contexts, devicez, mrx) = {
         let contexts = Arc::new(if matches!(ownership, ShardOwnership::Sharded { .. }) {
@@ -1101,11 +1114,13 @@ pub fn load_tensor_no_resharding<'py>(
         (contexts, devicez, mrx)
     };
 
+    let expected: Vec<usize> = ranges
+        .iter()
+        .map(|&(_, a, b)| (b - a) * shard_size)
+        .collect();
     let mut futures = Vec::<BoxFuture<_>>::with_capacity(ranges.len());
-    let mut expected = Vec::with_capacity(ranges.len());
-    for (i, &(idx, a, b)) in ranges.iter().enumerate() {
-        #[cfg(not(target_os = "linux"))]
-        let _ = i;
+    for &i in &schedule {
+        let (idx, a, b) = ranges[i];
         let n = b - a;
         let slice = &mut tensor_slice[a * shard_size..b * shard_size];
         let slice: &'static mut [u8] =
@@ -1121,7 +1136,6 @@ pub fn load_tensor_no_resharding<'py>(
             #[cfg(target_os = "linux")]
             (devicez[i].clone(), contexts.clone(), mrx[i].clone()),
         )));
-        expected.push(n * shard_size);
     }
 
     let mut checksum = 1;
@@ -1135,6 +1149,9 @@ pub fn load_tensor_no_resharding<'py>(
             _ => block_on(&runtime, futures, None),
         })
         .ok_or_else(|| PyOSError::new_err("copy_port timed out waiting for tensor shards"))?;
+    let results = restore_piece_order(results, &schedule).ok_or_else(|| {
+        PyOSError::new_err("copy_port shuffled download result count/order mismatch")
+    })?;
     #[cfg(target_arch = "x86_64")]
     unsafe {
         std::arch::x86_64::_mm_sfence();

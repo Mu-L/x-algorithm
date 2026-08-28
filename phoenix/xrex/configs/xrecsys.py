@@ -641,6 +641,7 @@ for config in configs:
                 "mask_candidate_positive_when_negative_action_present", False
             ),
             train_view_through_heads=mparams.get("train_view_through_heads", False),
+            concat_history_bridge_prob=mparams.get("concat_history_bridge_prob", False),
             mact_in_app_loss_weight=mparams.get("mact_in_app_loss_weight", 1.0),
             split_head_training_by_source=mparams.get("split_head_training_by_source", False),
             condition_search_relevance_on_prompt=mparams.get(

@@ -16,64 +16,70 @@ use xai_candidate_pipeline::filter::{Filter, FilterResult};
 
 // User ids below are obfuscated; usernames are included for transparency.
 
-// @OmarAzizSenador deleted his account at the time this code was written.
-// @_ANDREDOPRADO no live account was found.
-// @_EDUARDOMANTOAN no live account was found.
-// @ADALBERTO_1111 no live account was found.
-// @TWITTERADRIANAACCORSI no live account was found.
-// @ADRIANASOUSAPIAUI no live account was found.
-// @AGoldbach no live account was found.
-// @AHELIXO no live account was found.
-// @ALCEU_ALCEUMOREIRA no live account was found.
-// @ALEXROSETI no live account was found.
-// @ALKORAP1 no live account was found.
-// @BetoRichaOficial no live account was found.
-// @BRUNOPORTODEALMEIDA no live account was found.
-// @CHARLES067277 no live account was found.
-// @CRISTINAGRAEM no live account was found.
-// @DANIELBRSOARES no live account was found.
-// @DANILOBALASOFICIAL no live account was found.
-// @DANILOTORRES100 no live account was found.
-// @DECIOLIMAPT no live account was found.
-// @DELEGADOEGUCHI no live account was found.
-// @DEMAOLIVEIRA70 no live account was found.
-// @DEPCELSOSABINO no live account was found.
-// @DEPLUANAREGIA no live account was found.
-// @DUARTEJR70 no live account was found.
-// @DUDUSIVINSKI no live account was found.
-// @EDSONSANTOSRJ no live account was found.
-// @EUANGELAGARCIALINKTREE no live account was found.
-// @EXPEDITOFUCAP no live account was found.
-// @FADAPSICANALISE no live account was found.
-// @FEDERALFELICIO no live account was found.
-// @GERSONBURMANNIV no live account was found.
-// @GSMA1986 no live account was found.
-// @JAIZAMETODIO no live account was found.
-// @LEOMASCARENHASP no live account was found.
-// @LUCIANALIPPI30 no live account was found.
-// @LUCIANAOROZIMBO no live account was found.
-// @MARCELOSILVACAMPINAS no live account was found.
-// @MEUCANA669499 no live account was found.
-// @MIRCOCORONETTI no live account was found.
-// @NADIAGERHARD no live account was found.
-// @NETOFEITOSA6891 no live account was found.
-// @PATRICIACRIZANTO2 no live account was found.
-// @PAULOMOURAOTO no live account was found.
-// @PEDRONASSIF_RJ no live account was found.
-// @PEDROPONCIOBE no live account was found.
-// @POLICIALPAULOBASTOS no live account was found.
-// @SENATORCIDGOMES no live account was found.
-// @XIGORPORTO no live account was found.
+// We believe the account @ABR reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @ACMNETO_ reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @ALESILVAOFICIAL reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @CLECIACARVALHO1 reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @DAYSE reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @PAULODIMELO reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @PSTUPE reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @RICAR reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @SERGINHOCAXIAS reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @ZANAAMANDA reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// @ADALBERTO_1111 no live account found.
+// @ADRIANASOUSAPIAUI no live account found.
+// @AGOLDBACH no live account found.
+// @AHELIXO no live account found.
+// @ALCEU_ALCEUMOREIRA no live account found.
+// @ALEXROSETI no live account found.
+// @ALKORAP1 no live account found.
+// @ARAFETHNASREDDINE no live account found.
+// @BETORICHAOFICIAL no live account found.
+// @BRUNOPORTODEALMEIDA no live account found.
+// @CHARLES067277 no live account found.
+// @CRISTINAGRAEM no live account found.
+// @DANIELBRSOARES no live account found.
+// @DANILOBALASOFICIAL no live account found.
+// @DANILOTORRES100 no live account found.
+// @DECIOLIMAPT no live account found.
+// @DELEGADOEGUCHI no live account found.
+// @DEMAOLIVEIRA70 no live account found.
+// @DEPCELSOSABINO no live account found.
+// @DEPLUANAREGIA no live account found.
+// @DUARTEJR70 no live account found.
+// @DUDUSIVINSKI no live account found.
+// @EDSONSANTOSRJ no live account found.
+// @EUANGELAGARCIALINKTREE no live account found.
+// @EXPEDITOFUCAP no live account found.
+// @FADAPSICANALISE no live account found.
+// @FEDERALFELICIO no live account found.
+// @GERSONBURMANNIV no live account found.
+// @GSMA1986 no live account found.
+// @JAIZAMETODIO no live account found.
+// @LEOMASCARENHASP no live account found.
+// @LUCIANALIPPI30 no live account found.
+// @LUCIANAOROZIMBO no live account found.
+// @MARCELOSILVACAMPINAS no live account found.
+// @MEUCANA669499 no live account found.
+// @MIRCOCORONETTI no live account found.
+// @NADIAGERHARD no live account found.
+// @NETOFEITOSA6891 no live account found.
+// @OMARAZIZSENADOR no live account found.
+// @PATRICIACRIZANTO2 no live account found.
+// @PAULOMOURAOTO no live account found.
+// @PEDRONASSIF_RJ no live account found.
+// @PEDROPONCIOBE no live account found.
+// @POLICIALPAULOBASTOS no live account found.
+// @PRADOCORONEL no live account found.
+// @SENATORCIDGOMES no live account found.
+// @TWITTERADRIANAACCORSI no live account found.
+// @XIGORPORTO no live account found.
+// @_ANDREDOPRADO no live account found.
+// @_EDUARDOMANTOAN no live account found.
 
 /// User ids reported to the Electoral Court for the Brazil 2026 election.
 static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|| {
     FxHashSet::from_iter([
-        // @dayse
-        6003262,
-        // @ricar
-        6025402,
-        // @prado
-        9171802,
         // @madeleinelacsko
         9179462,
         // @renildo
@@ -1202,8 +1208,6 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         129837652,
         // @alexandrebaldy
         130620293,
-        // @abr
-        131428902,
         // @Miriampetrone
         132187525,
         // @depdelmasso
@@ -1244,8 +1248,6 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         141023529,
         // @DiogoPBotelho
         141087783,
-        // @PSTUPE
-        141090291,
         // @lucianogenesio
         142068227,
         // @gilmarribeirojr
@@ -1462,8 +1464,6 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         198350574,
         // @DepEduardoCunha
         198535390,
-        // @acmneto_
-        199025417,
         // @EdsonSilvaCotia
         199102127,
         // @MariaSeffair
@@ -1628,8 +1628,6 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         276794985,
         // @danealencar
         278126758,
-        // @paulodimelo
-        278319124,
         // @CostaMarinara
         278549268,
         // @AllanPombopdt
@@ -1660,8 +1658,6 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         289318056,
         // @waltercamargo40
         289521136,
-        // @ArafetH
-        290106695,
         // @coelho_rodrigo
         290204659,
         // @fefrancischini
@@ -1736,12 +1732,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         332324517,
         // @RequiaoFilho
         333720455,
-        // @cleciacarvalho1
-        334585581,
         // @Fabinho_Gaspar
         334978230,
-        // @ZanaAmanda
-        335065620,
         // @simboramudar22
         337269106,
         // @_soedi_
@@ -1956,8 +1948,6 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1081998169,
         // @deproosevelt
         1084884007,
-        // @AleSilvaOficial
-        1089692132,
         // @depjanetedesa
         1094959356,
         // @NeumannJarbas
@@ -1978,8 +1968,6 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1316758495,
         // @zecarlospt
         1325494376,
-        // @bispadamares
-        1326865753,
         // @CARLOSVALADARE7
         1356677952,
         // @D_GoretePereira
@@ -2764,6 +2752,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1083098735675084800,
         // @PEDROCO13904182
         1083745378489589760,
+        // @DamaresAlves
+        1083774484123975680,
         // @BennyBriolly
         1084272914202091520,
         // @majorfabianadep
@@ -2864,8 +2854,6 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1109869057153683462,
         // @DrCesarMello
         1110177096373100545,
-        // @dredsondapaiol
-        1110537499242389504,
         // @ToniettoChris
         1110626741314306049,
         // @keilapereirasp
@@ -3334,8 +3322,6 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1314575606487670784,
         // @andersonlimaadm
         1318194625400737792,
-        // @SerginhoCaxias
-        1318204633823776770,
         // @delegadalia
         1318672895573479424,
         // @ElianaBayer_
@@ -4911,7 +4897,7 @@ mod tests {
     #[test]
     fn hardcoded_list_is_non_empty() {
         assert!(!BRAZIL_2026_ELECTION_USER_IDS.is_empty());
-        assert_eq!(BRAZIL_2026_ELECTION_USER_IDS.len(), 2328);
+        assert_eq!(BRAZIL_2026_ELECTION_USER_IDS.len(), 2315);
     }
 
     #[test]

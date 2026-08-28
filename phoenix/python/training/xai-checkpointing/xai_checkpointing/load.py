@@ -12,6 +12,7 @@ import os
 import pathlib
 import re
 import time
+from collections.abc import Iterable
 from typing import Any, Callable
 
 import jax
@@ -32,6 +33,54 @@ PyTree = common.PyTree
 
 _NODE_SERIALIZE_ENV = "XAI_RESTORE_NODE_SERIALIZE"
 _NODE_LOCK_FILE_ENV = "XAI_RESTORE_NODE_LOCK_FILE"
+_ENCRYPTION_MAGIC = b"XAIENC01"
+
+
+def _is_encrypted_tree(tree: pathlib.Path) -> bool:
+    try:
+        with (tree / "_METADATA").open("rb") as f:
+            return f.read(len(_ENCRYPTION_MAGIC)) == _ENCRYPTION_MAGIC
+    except FileNotFoundError:
+        return False
+
+
+def _names_from_tree_metadata(metadata_json: dict[str, Any]) -> list[str]:
+    return [
+        ".".join(str(k["key"]) for k in v["key_metadata"])
+        for v in metadata_json["tree_metadata"].values()
+        if not v["value_metadata"]["skip_deserialize"]
+    ]
+
+
+def _prepare_checkpoint_read(
+    path: pathlib.Path, kms_client: object | None
+) -> tuple[bool, object | None, dict[str, Any], list[str], ts.Context]:
+    encrypted = _is_encrypted_tree(path)
+    if encrypted:
+        import xai_kms
+
+        os.environ.setdefault("TENSORSTORE_HTTP_THREADS", "64")
+        if kms_client is None:
+            kms_client = xai_kms.KmsClient.from_cluster_env()
+        metadata_json = json.loads(
+            xai_kms.nfs.open_envelope(kms_client, str(path / "_METADATA")).read()
+        )
+        checkpoint_names = _names_from_tree_metadata(metadata_json)
+    else:
+        with (path / "_METADATA").open() as f:
+            metadata_json = json.load(f)
+        checkpoint_names = list(
+            tree_to_dict(ocp.StandardCheckpointer().metadata(path), keep_none=False).keys()
+        )
+
+    context_spec = {
+        "file_io_concurrency": {"limit": 128},
+        "cache_pool#ocdbt": {"total_bytes_limit": 100000000},
+    }
+    if encrypted:
+        context_spec["http_request_concurrency"] = {"limit": 128}
+
+    return encrypted, kms_client, metadata_json, checkpoint_names, ts.Context(context_spec)
 
 
 def _restore_node_serialize_enabled() -> bool:
@@ -81,13 +130,13 @@ def _release_batch_memory():
 
 
 def _build_read_plan(
-    metadata,
+    checkpoint_names: Iterable[str],
     host_state: dict[str, jax.Array],
     load_mask: dict[str, jax.Array],
     rename: Callable[[str], str] | None,
 ) -> list[tuple[str, str, list[bool], int]]:
     plan: list[tuple[str, str, list[bool], int]] = []
-    for checkpoint_name in tree_to_dict(metadata, keep_none=False).keys():
+    for checkpoint_name in checkpoint_names:
         name = checkpoint_name
         if rename is not None:
             name = rename(checkpoint_name)
@@ -153,6 +202,7 @@ def _open_tensor(
     ts_context: ts.Context,
     dest: jax.Array,
     has_domain: bool,
+    tspec_transform: Callable[[dict[str, Any]], dict[str, Any]] | None,
 ) -> ts.TensorStore:
     info = ocp.type_handlers.ParamInfo(
         name=checkpoint_name,
@@ -162,6 +212,8 @@ def _open_tensor(
         use_zarr3=use_zarr3,
     )
     tspec = ocp.type_handlers.get_json_tspec_read(info, use_ocdbt=True)
+    if tspec_transform is not None:
+        tspec = tspec_transform(tspec)
     t = ts.open(ts.Spec(tspec), open=True, context=ts_context).result()
     if not has_domain and tuple(t.shape) != tuple(dest.shape):
         raise ValueError(
@@ -254,6 +306,7 @@ def load_checkpoint(
     tag: str | None = None,
     timeout: float = 900.0,
     concurrent_gb: float | None = None,
+    kms_client: object | None = None,
 ):
     if tag is None:
         tag = "orbax-ckpt"
@@ -266,18 +319,13 @@ def load_checkpoint(
     rank_logger.info("Restoring checkpoint from %s", path)
 
     path = pathlib.Path(path) / tag
-    metadata = ocp.StandardCheckpointer().metadata(path)
-    with (path / "_METADATA").open() as f:
-        use_zarr3 = json.load(f)["use_zarr3"]
 
-    ts_context = ts.Context(
-        {
-            "file_io_concurrency": {"limit": 128},
-            "cache_pool#ocdbt": {"total_bytes_limit": 100000000},
-        }
+    encrypted, kms_client, metadata_json, checkpoint_names, ts_context = _prepare_checkpoint_read(
+        path, kms_client
     )
+    use_zarr3 = metadata_json["use_zarr3"]
 
-    plan = _build_read_plan(metadata, host_state, load_mask, rename)
+    plan = _build_read_plan(checkpoint_names, host_state, load_mask, rename)
 
     concurrent_bytes = int(concurrent_gb * 10**9) if concurrent_gb else None
     total_bytes = sum(nbytes for *_, nbytes in plan)
@@ -325,7 +373,15 @@ def load_checkpoint(
             num_batches,
         )
 
-    try:
+    with contextlib.ExitStack() as stack:
+        if node_lock is not None:
+            stack.callback(node_lock.close)
+        tspec_transform = None
+        if encrypted:
+            import xai_kms
+
+            tspec_transform = stack.enter_context(xai_kms.KvServe(kms_client, path)).rewrite_ocdbt
+
         for batch_index, batch in enumerate(batches, start=1):
             with node_lock if node_lock is not None else contextlib.nullcontext():
                 stores = []
@@ -338,6 +394,7 @@ def load_checkpoint(
                         ts_context,
                         host_state[name],
                         has_domain=domains.get(name) is not None,
+                        tspec_transform=tspec_transform,
                     )
                     for s, future in enumerate(
                         _read_into_shards(t, host_state[name], mask, domains.get(name))
@@ -355,9 +412,6 @@ def load_checkpoint(
                 _drain_read_futures(futures, host_state, path, timeout, log_loaded=True)
                 del stores
             _release_batch_memory()
-    finally:
-        if node_lock is not None:
-            node_lock.close()
 
     rank_logger.info("Loading checkpoint took %.2f sec", time.time() - start)
 
@@ -409,6 +463,7 @@ def load_checkpoint_streamed(
     window_gb: float | None = None,
     window_cap_gb: float | None = None,
     on_replaced: Callable[[list[tuple[jax.Array, jax.Array]]], None] | None = None,
+    kms_client: Any | None = None,
 ) -> list[tuple[jax.Array, jax.Array]]:
     if tag is None:
         tag = "orbax-ckpt"
@@ -420,18 +475,12 @@ def load_checkpoint_streamed(
     start = time.time()
 
     path = pathlib.Path(path) / tag
-    metadata = ocp.StandardCheckpointer().metadata(path)
-    with (path / "_METADATA").open() as f:
-        use_zarr3 = json.load(f)["use_zarr3"]
-
-    ts_context = ts.Context(
-        {
-            "file_io_concurrency": {"limit": 128},
-            "cache_pool#ocdbt": {"total_bytes_limit": 100000000},
-        }
+    encrypted, kms_client, metadata_json, checkpoint_names, ts_context = _prepare_checkpoint_read(
+        path, kms_client
     )
+    use_zarr3 = metadata_json["use_zarr3"]
 
-    plan = _build_read_plan(metadata, device_state, load_mask, rename)
+    plan = _build_read_plan(checkpoint_names, device_state, load_mask, rename)
     plan.sort(key=lambda item: item[3], reverse=True)
 
     auto_window = window_gb is None
@@ -484,7 +533,15 @@ def load_checkpoint_streamed(
             num_batches,
         )
 
-    try:
+    with contextlib.ExitStack() as stack:
+        if node_lock is not None:
+            stack.callback(node_lock.close)
+        tspec_transform = None
+        if encrypted:
+            import xai_kms
+
+            tspec_transform = stack.enter_context(xai_kms.KvServe(kms_client, path)).rewrite_ocdbt
+
         for batch in batches:
             with node_lock if node_lock is not None else contextlib.nullcontext():
                 staging = _stage_to_host({name: device_state[name] for _, name, _, _ in batch})
@@ -499,6 +556,7 @@ def load_checkpoint_streamed(
                         ts_context,
                         staging[name],
                         has_domain=domains.get(name) is not None,
+                        tspec_transform=tspec_transform,
                     )
                     for s, future in enumerate(
                         _read_into_shards(t, staging[name], mask, domains.get(name))
@@ -524,9 +582,6 @@ def load_checkpoint_streamed(
 
                 del staging, new_arrays, stores, batch_replaced
             _release_batch_memory()
-    finally:
-        if node_lock is not None:
-            node_lock.close()
 
     rank_logger.info("Loading checkpoint (streamed) took %.2f sec", time.time() - start)
     return replaced
