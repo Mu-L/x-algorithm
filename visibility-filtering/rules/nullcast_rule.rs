@@ -10,8 +10,7 @@ impl Rule for NullcastedTweetDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        let candidate = context.candidate();
-        if candidate.is_nullcast() && !candidate.is_retweet() && !candidate.is_community_tweet() {
+        if context.is_nullcast() && !context.is_retweet() && !context.is_community_tweet() {
             return VfAction::Drop(FilteredReason::TweetIsNullcast);
         }
         VfAction::Allow
@@ -21,30 +20,24 @@ impl Rule for NullcastedTweetDropRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        CoreFeature, HydratedTweetCandidate, TweetFeatures, Viewer, ViewerFeatures,
-    };
+    use crate::models::{HydratedTweetCandidate, TweetFeatures};
+    use crate::rules::fixtures::{candidate, viewer, VIEWER_ID};
 
-    fn viewer() -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(999),
-            ..Default::default()
-        }
+    fn nullcast_candidate() -> HydratedTweetCandidate {
+        candidate()
+            .with_tweet_features(TweetFeatures {
+                is_nullcast: true,
+                ..Default::default()
+            })
+            .build()
     }
 
     #[test]
     fn nullcast_non_retweet_drops() {
         let rule = NullcastedTweetDropRule;
-        let c = HydratedTweetCandidate {
-            tweet_id: 1,
-            tweet_features: TweetFeatures {
-                is_nullcast: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let c = nullcast_candidate();
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(_)
         ));
     }
@@ -52,17 +45,10 @@ mod tests {
     #[test]
     fn nullcast_community_tweet_allows() {
         let rule = NullcastedTweetDropRule;
-        let c = HydratedTweetCandidate {
-            tweet_id: 1,
-            tweet_features: TweetFeatures {
-                is_nullcast: true,
-                is_community_tweet: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut c = nullcast_candidate();
+        c.tweet_features.is_community_tweet = true;
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -70,20 +56,10 @@ mod tests {
     #[test]
     fn nullcast_retweet_allows() {
         let rule = NullcastedTweetDropRule;
-        let c = HydratedTweetCandidate {
-            tweet_id: 1,
-            tweet_features: TweetFeatures {
-                is_nullcast: true,
-                core: CoreFeature {
-                    source_tweet_id: Some(99),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut c = nullcast_candidate();
+        c.tweet_features.core.source_tweet_id = Some(99);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -91,16 +67,9 @@ mod tests {
     #[test]
     fn non_nullcast_allows() {
         let rule = NullcastedTweetDropRule;
-        let c = HydratedTweetCandidate {
-            tweet_id: 1,
-            tweet_features: TweetFeatures {
-                is_nullcast: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let c = candidate().build();
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }

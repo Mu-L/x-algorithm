@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-08-27T19:41:17Z
+// mirrored from config feature-switch defaults; last sync 2026-08-28T20:07:44Z
 use xai_feature_switches::param;
 
 param!(
@@ -243,6 +243,7 @@ param!(
     "rust_home_mixer_log_slate_context",
     false
 );
+param!(RerankerHeadTag, i64, "rust_home_mixer_reranker_head_tag", 0);
 param!(
     OonWeightFactor,
     f64,

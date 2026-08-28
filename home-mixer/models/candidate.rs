@@ -24,6 +24,8 @@ pub struct PostCandidate {
     pub slate_context: Option<SlateContext>,
     #[serde(default)]
     pub served_slate_context: Option<SlateContext>,
+    #[serde(default)]
+    pub reranker_head_tag: Option<u32>,
     #[serde(
         serialize_with = "serialize_served_type",
         deserialize_with = "deserialize_served_type"
@@ -208,6 +210,7 @@ impl CandidateHelpers for PostCandidate {
                 recon_gap_above: c.recon_gap_above,
             }),
             reward_rerank_slot_prob: None,
+            reranker_head_tag: self.reranker_head_tag,
         }
     }
 

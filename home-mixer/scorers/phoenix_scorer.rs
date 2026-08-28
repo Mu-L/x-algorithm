@@ -3,7 +3,7 @@ use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use crate::params::{
     PhoenixInferenceClusterId, PhoenixRankerNewUserHistoryThreshold,
-    PhoenixRankerNewUserInferenceClusterId,
+    PhoenixRankerNewUserInferenceClusterId, RerankerHeadTag,
 };
 use crate::util::egress::PredictionDispatch;
 use crate::util::phoenix_request::build_prediction_request;
@@ -112,6 +112,7 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
                     .map(Into::into),
                 prediction_request_id: Some(query.prediction_id),
                 last_scored_at_ms,
+                reranker_head_tag: Some(query.params.get(RerankerHeadTag) as u32),
                 ..Default::default()
             })
             .map(Ok)
@@ -123,5 +124,6 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
         candidate.served_slate_context = scored.served_slate_context;
         candidate.prediction_request_id = scored.prediction_request_id;
         candidate.last_scored_at_ms = scored.last_scored_at_ms;
+        candidate.reranker_head_tag = scored.reranker_head_tag;
     }
 }

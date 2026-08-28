@@ -234,6 +234,16 @@ async fn connect_and_list(
 type TransferFuture = BoxFuture<'static, (usize, u32)>;
 type DenseDownloadPlan = (Vec<TransferFuture>, Vec<usize>, Vec<u8>);
 
+async fn join_transfers(
+    futures: impl IntoIterator<Item = TransferFuture>,
+) -> Result<Vec<(usize, u32)>, CopyPortError> {
+    join_all(futures.into_iter().map(tokio::task::spawn))
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CopyPortError::Other(format!("copy_port download task join: {e}")))
+}
+
 async fn run_downloads(
     futures: Vec<TransferFuture>,
     rate_limit_bytes_per_sec: Option<u64>,
@@ -249,11 +259,7 @@ async fn run_downloads(
                 .max(1);
             join_rate_limited(futures, limit, max_c).await
         }
-        _ => join_all(futures.into_iter().map(tokio::task::spawn))
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| CopyPortError::Other(format!("copy_port download task join: {e}"))),
+        _ => join_transfers(futures).await,
     }
 }
 
@@ -273,11 +279,7 @@ async fn join_rate_limited(
             break;
         }
         let batch_size = batch.len();
-        let batch_results = join_all(batch.into_iter().map(tokio::task::spawn))
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| CopyPortError::Other(format!("copy_port download task join: {e}")))?;
+        let batch_results = join_transfers(batch).await?;
         let failed = batch_results
             .iter()
             .filter(|r| r.0 == TRANSFER_FAILED_SENTINEL)
@@ -1351,7 +1353,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn rate_limit_caps_in_flight_despite_spawn() {
+    async fn rate_limit_caps_in_flight() {
         let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let starts = std::sync::Arc::new(std::sync::Mutex::new(vec![None; 6]));
@@ -1366,14 +1368,13 @@ mod tests {
         let results = join_rate_limited(futures, 1 << 40, 2).await.unwrap();
         assert_eq!(
             results.iter().map(|r| r.1).collect::<Vec<_>>(),
-            vec![0, 1, 2, 3, 4, 5],
-            "join_all on JoinHandles must keep submission order"
+            vec![0, 1, 2, 3, 4, 5]
         );
         assert_eq!(peak.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn rate_limit_paces_between_spawned_batches() {
+    async fn rate_limit_paces_between_batches() {
         let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let starts = std::sync::Arc::new(std::sync::Mutex::new(vec![None; 4]));
@@ -1405,7 +1406,7 @@ mod tests {
         let between = second_batch_start.saturating_duration_since(first_batch_start);
         assert!(
             between >= Duration::from_millis(700),
-            "second batch started {between:?} after the first; expected ~1s pacing sleep"
+            "second batch started {between:?} after the first"
         );
 
         let total_bytes = (4 * bytes) as f64;

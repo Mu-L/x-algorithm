@@ -158,71 +158,49 @@ pub const FOSNR_ABUSE_INSULTS_OON_DROP: SafetyLabelDropRule = SafetyLabelDropRul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        HydratedTweetCandidate, SafetyLabel, SafetyLabelMap, Viewer, ViewerFeatures,
+    use crate::rules::fixtures::{
+        author_viewer, candidate, sensitive_opt_in_viewer, viewer, VIEWER_ID,
     };
-    use std::collections::HashMap;
-
-    fn candidate_with_label(label: SafetyLabelType) -> HydratedTweetCandidate {
-        let mut labels = HashMap::new();
-        labels.insert(label, SafetyLabel::default());
-        HydratedTweetCandidate {
-            tweet_id: 1,
-            author_id: 100,
-            safety_labels: SafetyLabelMap::new(labels),
-            ..Default::default()
-        }
-    }
-
-    fn viewer() -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(999),
-            ..Default::default()
-        }
-    }
-
-    fn author_viewer() -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(100),
-            ..Default::default()
-        }
-    }
 
     #[test]
     fn drops_non_author_with_mapped_reason() {
-        let c = candidate_with_label(SafetyLabelType::PDNA);
+        let c = candidate().with_label(SafetyLabelType::PDNA).build();
         assert!(matches!(
-            PDNA_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            PDNA_DROP.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::SafetyResult(_))
         ));
 
-        let c = candidate_with_label(SafetyLabelType::BOUNCE);
+        let c = candidate().with_label(SafetyLabelType::BOUNCE).build();
         assert!(matches!(
-            BOUNCE_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            BOUNCE_DROP.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::TweetIsBounced)
         ));
 
-        let c = candidate_with_label(SafetyLabelType::SPAM);
+        let c = candidate().with_label(SafetyLabelType::SPAM).build();
         assert!(matches!(
-            SPAM_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            SPAM_DROP.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::PossiblyUndesirable)
         ));
 
-        let c = candidate_with_label(SafetyLabelType::NSFW_HIGH_RECALL);
+        let c = candidate()
+            .with_label(SafetyLabelType::NSFW_HIGH_RECALL)
+            .build();
         assert!(matches!(
-            NSFW_HIGH_RECALL_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            NSFW_HIGH_RECALL_DROP.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::ContainNsfwMedia)
         ));
     }
 
     #[test]
     fn author_exempt_rules_allow_self_view() {
-        let c = candidate_with_label(SafetyLabelType::PDNA);
+        let c = candidate().with_label(SafetyLabelType::PDNA).build();
         assert!(matches!(
             PDNA_DROP.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Allow
         ));
-        let c = candidate_with_label(SafetyLabelType::DO_NOT_AMPLIFY);
+        let c = candidate()
+            .with_label(SafetyLabelType::DO_NOT_AMPLIFY)
+            .build();
         assert!(matches!(
             DO_NOT_AMPLIFY_DROP.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Allow
@@ -231,7 +209,9 @@ mod tests {
 
     #[test]
     fn all_viewer_rules_drop_even_for_author() {
-        let c = candidate_with_label(SafetyLabelType::FOR_EMERGENCY_USE_ONLY);
+        let c = candidate()
+            .with_label(SafetyLabelType::FOR_EMERGENCY_USE_ONLY)
+            .build();
         assert!(matches!(
             FOR_EMERGENCY_USE_ONLY_DROP.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Drop(FilteredReason::UnspecifiedReason)
@@ -240,41 +220,23 @@ mod tests {
 
     #[test]
     fn oon_media_drops_regardless_of_opt_in() {
-        let opted_in = ViewerFeatures {
-            viewer: Viewer::LoggedIn(999),
-            allows_sensitive_media: true,
-            ..Default::default()
-        };
-        let c = candidate_with_label(SafetyLabelType::NSFW_HIGH_PRECISION);
+        let c = candidate()
+            .with_label(SafetyLabelType::NSFW_HIGH_PRECISION)
+            .build();
         assert!(matches!(
-            NSFW_HIGH_PRECISION_DROP.evaluate(&crate::rules::test_context(&opted_in, &c)),
+            NSFW_HIGH_PRECISION_DROP
+                .evaluate(&crate::rules::test_context(&sensitive_opt_in_viewer(), &c)),
             VfAction::Drop(FilteredReason::ContainNsfwMedia)
         ));
     }
 
     #[test]
     fn no_label_allows() {
-        let c = HydratedTweetCandidate {
-            tweet_id: 1,
-            ..Default::default()
-        };
+        let c = candidate().build();
         assert!(matches!(
-            PDNA_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            PDNA_DROP.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
-    }
-
-    fn follower_viewer() -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(999),
-            ..Default::default()
-        }
-    }
-
-    fn candidate_with_label_followed(label: SafetyLabelType) -> HydratedTweetCandidate {
-        let mut c = candidate_with_label(label);
-        c.relationship.viewer_follows_author = true;
-        c
     }
 
     #[test]
@@ -285,14 +247,14 @@ mod tests {
             &FOSNR_ABUSE_DROP,
             &FOSNR_CIVIC_INTEGRITY_DROP,
         ] {
-            let c = candidate_with_label(rule.label);
+            let c = candidate().with_label(rule.label).build();
             assert!(matches!(
-                rule.evaluate(&crate::rules::test_context(&viewer(), &c)),
+                rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
                 VfAction::Drop(FilteredReason::PossiblyUndesirable)
             ));
-            let c = candidate_with_label_followed(rule.label);
+            let c = candidate().with_label(rule.label).followed().build();
             assert!(matches!(
-                rule.evaluate(&crate::rules::test_context(&follower_viewer(), &c)),
+                rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
                 VfAction::Drop(FilteredReason::PossiblyUndesirable)
             ));
         }
@@ -306,7 +268,7 @@ mod tests {
             &FOSNR_ABUSE_DROP,
             &FOSNR_CIVIC_INTEGRITY_DROP,
         ] {
-            let c = candidate_with_label(rule.label);
+            let c = candidate().with_label(rule.label).build();
             assert!(matches!(
                 rule.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
                 VfAction::Allow
@@ -316,39 +278,46 @@ mod tests {
 
     #[test]
     fn malicious_url_drops_non_author_and_exempts_author() {
-        let c = candidate_with_label(SafetyLabelType::MALICIOUS_URL);
+        let c = candidate()
+            .with_label(SafetyLabelType::MALICIOUS_URL)
+            .build();
         assert!(matches!(
-            MALICIOUS_URL_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            MALICIOUS_URL_DROP.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::PossiblyUndesirable)
         ));
         assert!(matches!(
             MALICIOUS_URL_DROP.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Allow
         ));
-        let c = HydratedTweetCandidate {
-            tweet_id: 1,
-            ..Default::default()
-        };
+        let c = candidate().build();
         assert!(matches!(
-            MALICIOUS_URL_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            MALICIOUS_URL_DROP.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
 
     #[test]
     fn fosnr_abuse_insults_oon_drops_all_non_authors() {
-        let c = candidate_with_label(SafetyLabelType::FOSNR_ABUSE_INSULTS);
-        assert!(matches!(
-            FOSNR_ABUSE_INSULTS_OON_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
-            VfAction::Drop(FilteredReason::PossiblyUndesirable)
-        ));
-        let c = candidate_with_label_followed(SafetyLabelType::FOSNR_ABUSE_INSULTS);
+        let c = candidate()
+            .with_label(SafetyLabelType::FOSNR_ABUSE_INSULTS)
+            .build();
         assert!(matches!(
             FOSNR_ABUSE_INSULTS_OON_DROP
-                .evaluate(&crate::rules::test_context(&follower_viewer(), &c)),
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::PossiblyUndesirable)
         ));
-        let c = candidate_with_label(SafetyLabelType::FOSNR_ABUSE_INSULTS);
+        let c = candidate()
+            .with_label(SafetyLabelType::FOSNR_ABUSE_INSULTS)
+            .followed()
+            .build();
+        assert!(matches!(
+            FOSNR_ABUSE_INSULTS_OON_DROP
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
+            VfAction::Drop(FilteredReason::PossiblyUndesirable)
+        ));
+        let c = candidate()
+            .with_label(SafetyLabelType::FOSNR_ABUSE_INSULTS)
+            .build();
         assert!(matches!(
             FOSNR_ABUSE_INSULTS_OON_DROP
                 .evaluate(&crate::rules::test_context(&author_viewer(), &c)),

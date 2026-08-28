@@ -36,11 +36,11 @@ impl Rule for UserSafetyLabelDropRule {
         if context.is_author_viewer() {
             return VfAction::Allow;
         }
-        if !context.candidate().author_has_user_label(self.label) {
+        if !context.author_has_user_label(self.label) {
             return VfAction::Allow;
         }
         if self.require_non_follower
-            && !context.viewer().viewer_is_logged_out()
+            && !context.viewer_is_logged_out()
             && context.viewer_follows_author()
         {
             return VfAction::Allow;
@@ -121,54 +121,32 @@ pub const DO_NOT_AMPLIFY_NON_FOLLOWER_USER_DROP: UserSafetyLabelDropRule =
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        AuthorFeatures, HydratedTweetCandidate, UserLabelSet, Viewer, ViewerFeatures,
-    };
-    use std::collections::HashSet;
+    use crate::models::HydratedTweetCandidate;
+    use crate::rules::fixtures::{author_viewer, candidate, logged_out_viewer, viewer, VIEWER_ID};
 
     fn candidate_with_user_label(label: LabelValue) -> HydratedTweetCandidate {
-        HydratedTweetCandidate {
-            tweet_id: 1,
-            author_id: 100,
-            author_features: AuthorFeatures {
-                user_labels: UserLabelSet::new(HashSet::from([label])),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-
-    fn viewer() -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(999),
-            ..Default::default()
-        }
-    }
-
-    fn author_viewer() -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(100),
-            ..Default::default()
-        }
+        candidate().with_author_user_label(label).build()
     }
 
     #[test]
     fn drops_when_author_has_label() {
         let c = candidate_with_user_label(LabelValue::NSFW_HIGH_RECALL);
         assert!(matches!(
-            NSFW_HIGH_RECALL_USER_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            NSFW_HIGH_RECALL_USER_DROP
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::UnspecifiedReason)
         ));
 
         let c = candidate_with_user_label(LabelValue::COMPROMISED);
         assert!(matches!(
-            COMPROMISED_USER_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            COMPROMISED_USER_DROP.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::UnspecifiedReason)
         ));
 
         let c = candidate_with_user_label(LabelValue::SPAM_HIGH_RECALL);
         assert!(matches!(
-            SPAM_HIGH_RECALL_USER_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            SPAM_HIGH_RECALL_USER_DROP
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::UnspecifiedReason)
         ));
     }
@@ -197,14 +175,10 @@ mod tests {
 
     #[test]
     fn allows_when_label_absent() {
-        let c = HydratedTweetCandidate {
-            tweet_id: 1,
-            author_id: 100,
-            ..Default::default()
-        };
+        let c = candidate().build();
         assert!(matches!(
             IMPERSONATION_HIGH_PRECISION_USER_DROP
-                .evaluate(&crate::rules::test_context(&viewer(), &c)),
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -213,7 +187,8 @@ mod tests {
     fn different_label_does_not_match() {
         let c = candidate_with_user_label(LabelValue::LOW_QUALITY);
         assert!(matches!(
-            NSFW_HIGH_PRECISION_USER_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            NSFW_HIGH_PRECISION_USER_DROP
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -222,13 +197,15 @@ mod tests {
     fn avatar_banner_blacklist_drop_with_mapped_reason() {
         let c = candidate_with_user_label(LabelValue::NSFW_AVATAR_IMAGE);
         assert!(matches!(
-            NSFW_AVATAR_IMAGE_USER_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            NSFW_AVATAR_IMAGE_USER_DROP
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::UnspecifiedReason)
         ));
 
         let c = candidate_with_user_label(LabelValue::NSFW_BANNER_IMAGE);
         assert!(matches!(
-            NSFW_BANNER_IMAGE_USER_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            NSFW_BANNER_IMAGE_USER_DROP
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::UnspecifiedReason)
         ));
     }
@@ -237,16 +214,14 @@ mod tests {
     fn abusive_high_recall_drops_non_followers_and_logged_out() {
         let c = candidate_with_user_label(LabelValue::ABUSIVE_HIGH_RECALL);
         assert!(matches!(
-            ABUSIVE_HIGH_RECALL_USER_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            ABUSIVE_HIGH_RECALL_USER_DROP
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::UnspecifiedReason)
         ));
 
-        let logged_out = ViewerFeatures {
-            viewer: Viewer::LoggedOut,
-            ..Default::default()
-        };
         assert!(matches!(
-            ABUSIVE_HIGH_RECALL_USER_DROP.evaluate(&crate::rules::test_context(&logged_out, &c)),
+            ABUSIVE_HIGH_RECALL_USER_DROP
+                .evaluate(&crate::rules::test_context(&logged_out_viewer(), &c)),
             VfAction::Drop(FilteredReason::UnspecifiedReason)
         ));
     }
@@ -256,7 +231,8 @@ mod tests {
         let mut c = candidate_with_user_label(LabelValue::ABUSIVE_HIGH_RECALL);
         c.relationship.viewer_follows_author = true;
         assert!(matches!(
-            ABUSIVE_HIGH_RECALL_USER_DROP.evaluate(&crate::rules::test_context(&viewer(), &c)),
+            ABUSIVE_HIGH_RECALL_USER_DROP
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }

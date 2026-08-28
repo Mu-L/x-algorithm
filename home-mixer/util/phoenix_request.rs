@@ -1,5 +1,6 @@
 use crate::models::candidate::{CandidateHelpers, PostCandidate};
 use crate::models::query::ScoredPostsQuery;
+use crate::params::RerankerHeadTag;
 use rustc_hash::FxHashSet;
 use xai_candidate_pipeline::component_library::clients::phoenix_prediction_client::TOP_LOG_PROBS_NUM;
 use xai_geo_ip::zip_to_dma_code;
@@ -145,7 +146,9 @@ pub fn build_prediction_request(
 ) -> PredictNextActionsRequest {
     let mut request = build_request_without_sequence_and_candidates(query, product_surface);
     request.candidate_sets[0].candidates = build_tweet_infos(query, candidates);
-    request.sequences = vec![query.scoring_sequence.clone().unwrap_or_default()];
+    let mut sequence = query.scoring_sequence.clone().unwrap_or_default();
+    sequence.reranker_head_tag = Some(query.params.get(RerankerHeadTag) as u32);
+    request.sequences = vec![sequence];
     request.columnar_sequences = query.columnar_scoring_sequence.iter().cloned().collect();
     request
 }

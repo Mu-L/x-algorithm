@@ -1,3 +1,8 @@
+pub mod context;
+#[cfg(test)]
+pub(crate) mod fixtures;
+#[cfg(test)]
+mod golden_corpus;
 pub mod metrics;
 pub mod nsfw_age_gating;
 pub mod nsfw_interstitial;
@@ -10,58 +15,11 @@ pub mod tweet_label_drops;
 pub mod user_label_drops;
 pub mod user_rules;
 
-use crate::models::{HydratedTweetCandidate, SafetyLabelType, VfAction, ViewerFeatures};
+use crate::models::VfAction;
 use xai_visibility_filtering::models::FilteredReason;
 
+pub use context::RuleContext;
 pub use registry::{Policies, SafetyLevel};
-
-pub struct RuleContext<'a> {
-    safety_level: SafetyLevel,
-    viewer: &'a ViewerFeatures,
-    candidate: &'a HydratedTweetCandidate,
-}
-
-impl<'a> RuleContext<'a> {
-    fn new(
-        safety_level: SafetyLevel,
-        viewer: &'a ViewerFeatures,
-        candidate: &'a HydratedTweetCandidate,
-    ) -> Self {
-        Self {
-            safety_level,
-            viewer,
-            candidate,
-        }
-    }
-
-    pub fn safety_level(&self) -> SafetyLevel {
-        self.safety_level
-    }
-
-    pub fn has_tweet_safety_label(&self, label: SafetyLabelType) -> bool {
-        self.candidate.has_safety_label(label)
-    }
-
-    pub fn is_author_viewer(&self) -> bool {
-        self.candidate.is_author_viewer(self.viewer.viewer)
-    }
-
-    pub fn viewer_follows_author(&self) -> bool {
-        self.candidate.viewer_follows_author()
-    }
-
-    pub fn viewer_allows_sensitive_media(&self) -> bool {
-        self.viewer.allows_sensitive_media
-    }
-
-    pub fn viewer(&self) -> &ViewerFeatures {
-        self.viewer
-    }
-
-    pub fn candidate(&self) -> &HydratedTweetCandidate {
-        self.candidate
-    }
-}
 
 pub trait Rule: Send + Sync {
     fn name(&self) -> &'static str;
@@ -111,8 +69,8 @@ fn evaluate_rules(rules: &[Box<dyn Rule>], context: &RuleContext<'_>) -> Verdict
 
 #[cfg(test)]
 pub(crate) fn test_context<'a>(
-    viewer: &'a ViewerFeatures,
-    candidate: &'a HydratedTweetCandidate,
+    viewer: &'a crate::models::ViewerFeatures,
+    candidate: &'a crate::models::HydratedTweetCandidate,
 ) -> RuleContext<'a> {
     RuleContext::new(SafetyLevel::TimelineHome, viewer, candidate)
 }
@@ -120,6 +78,7 @@ pub(crate) fn test_context<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{HydratedTweetCandidate, ViewerFeatures};
     use std::sync::{Arc, Mutex};
 
     struct FakeRule {

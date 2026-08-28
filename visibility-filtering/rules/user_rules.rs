@@ -1,18 +1,18 @@
-use crate::models::{AuthorFeatures, VfAction};
+use crate::models::VfAction;
 use crate::rules::{Rule, RuleContext};
 use xai_visibility_filtering::models::FilteredReason;
 
 #[derive(Clone)]
 pub struct AuthorFlagDropRule {
     name: &'static str,
-    flag: fn(&AuthorFeatures) -> bool,
+    flag: fn(&RuleContext<'_>) -> bool,
     reason: FilteredReason,
 }
 
 impl AuthorFlagDropRule {
     pub const fn new(
         name: &'static str,
-        flag: fn(&AuthorFeatures) -> bool,
+        flag: fn(&RuleContext<'_>) -> bool,
         reason: FilteredReason,
     ) -> Self {
         Self { name, flag, reason }
@@ -25,8 +25,7 @@ impl Rule for AuthorFlagDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        let candidate = context.candidate();
-        if (self.flag)(&candidate.author_features) && !context.is_author_viewer() {
+        if (self.flag)(context) && !context.is_author_viewer() {
             return VfAction::Drop(self.reason.clone());
         }
         VfAction::Allow
@@ -35,32 +34,32 @@ impl Rule for AuthorFlagDropRule {
 
 pub const SUSPENDED_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "SuspendedAuthorRule",
-    |a| a.is_suspended,
+    |context| context.author_is_suspended(),
     FilteredReason::AuthorIsSuspended,
 );
 pub const DEACTIVATED_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "DeactivatedAuthorRule",
-    |a| a.is_deactivated,
+    |context| context.author_is_deactivated(),
     FilteredReason::AuthorIsDeactivated,
 );
 pub const ERASED_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "ErasedAuthorRule",
-    |a| a.is_erased,
+    |context| context.author_is_erased(),
     FilteredReason::AuthorAccountIsInactive,
 );
 pub const OFFBOARDED_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "OffboardedAuthorRule",
-    |a| a.is_offboarded,
+    |context| context.author_is_offboarded(),
     FilteredReason::AuthorAccountIsInactive,
 );
 pub const NSFW_USER_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "DropNsfwUserAuthorRule",
-    |a| a.is_nsfw_user,
+    |context| context.author_is_nsfw_user(),
     FilteredReason::ContainNsfwMedia,
 );
 pub const NSFW_ADMIN_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "DropNsfwAdminAuthorRule",
-    |a| a.is_nsfw_admin,
+    |context| context.author_is_nsfw_admin(),
     FilteredReason::ContainNsfwMedia,
 );
 
@@ -72,11 +71,9 @@ impl Rule for ProtectedAuthorDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        let viewer = context.viewer();
-        let candidate = context.candidate();
-        if candidate.author_features.is_protected
+        if context.author_is_protected()
             && !context.is_author_viewer()
-            && (viewer.viewer_is_logged_out() || !candidate.viewer_follows_author())
+            && (context.viewer_is_logged_out() || !context.viewer_follows_author())
         {
             return VfAction::Drop(FilteredReason::AuthorIsProtected);
         }
@@ -87,33 +84,22 @@ impl Rule for ProtectedAuthorDropRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        AuthorFeatures, HydratedTweetCandidate, Viewer, ViewerAuthorRelationship, ViewerFeatures,
-    };
+    use crate::models::{AuthorFeatures, HydratedTweetCandidate};
+    use crate::rules::fixtures::{author_viewer, candidate, logged_out_viewer, viewer, VIEWER_ID};
 
     fn candidate_with_author(
         suspended: bool,
         deactivated: bool,
         protected: bool,
     ) -> HydratedTweetCandidate {
-        HydratedTweetCandidate {
-            tweet_id: 1,
-            author_id: 100,
-            author_features: AuthorFeatures {
+        candidate()
+            .with_author_features(AuthorFeatures {
                 is_suspended: suspended,
                 is_deactivated: deactivated,
                 is_protected: protected,
                 ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-
-    fn viewer(id: u64) -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(id),
-            ..Default::default()
-        }
+            })
+            .build()
     }
 
     #[test]
@@ -121,7 +107,7 @@ mod tests {
         let rule = SUSPENDED_AUTHOR_DROP;
         let c = candidate_with_author(true, false, false);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(_)
         ));
     }
@@ -131,7 +117,7 @@ mod tests {
         let rule = SUSPENDED_AUTHOR_DROP;
         let c = candidate_with_author(true, false, false);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(100), &c)),
+            rule.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Allow
         ));
     }
@@ -141,7 +127,7 @@ mod tests {
         let rule = DEACTIVATED_AUTHOR_DROP;
         let c = candidate_with_author(false, true, false);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(_)
         ));
     }
@@ -151,7 +137,7 @@ mod tests {
         let rule = ProtectedAuthorDropRule;
         let c = candidate_with_author(false, false, true);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(_)
         ));
     }
@@ -160,12 +146,9 @@ mod tests {
     fn protected_author_allows_follower() {
         let rule = ProtectedAuthorDropRule;
         let mut c = candidate_with_author(false, false, true);
-        c.relationship = ViewerAuthorRelationship {
-            viewer_follows_author: true,
-            ..Default::default()
-        };
+        c.relationship.viewer_follows_author = true;
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -174,12 +157,8 @@ mod tests {
     fn protected_author_drops_logged_out_viewer() {
         let rule = ProtectedAuthorDropRule;
         let c = candidate_with_author(false, false, true);
-        let logged_out = ViewerFeatures {
-            viewer: Viewer::LoggedOut,
-            ..Default::default()
-        };
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&logged_out, &c)),
+            rule.evaluate(&crate::rules::test_context(&logged_out_viewer(), &c)),
             VfAction::Drop(FilteredReason::AuthorIsProtected)
         ));
     }
@@ -189,7 +168,7 @@ mod tests {
         let rule = ProtectedAuthorDropRule;
         let c = candidate_with_author(false, false, true);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(100), &c)),
+            rule.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Allow
         ));
     }
@@ -216,23 +195,14 @@ mod tests {
         ];
         for (rule, name, author_features) in cases {
             assert_eq!(rule.name(), name);
-            let flagged = HydratedTweetCandidate {
-                tweet_id: 1,
-                author_id: 100,
-                author_features,
-                ..Default::default()
-            };
+            let flagged = candidate().with_author_features(author_features).build();
             assert!(matches!(
-                rule.evaluate(&crate::rules::test_context(&viewer(999), &flagged)),
+                rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &flagged)),
                 VfAction::Drop(FilteredReason::AuthorAccountIsInactive)
             ));
-            let unflagged = HydratedTweetCandidate {
-                tweet_id: 1,
-                author_id: 100,
-                ..Default::default()
-            };
+            let unflagged = candidate().build();
             assert!(matches!(
-                rule.evaluate(&crate::rules::test_context(&viewer(999), &unflagged)),
+                rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &unflagged)),
                 VfAction::Allow
             ));
         }
@@ -243,7 +213,7 @@ mod tests {
         let rule = SUSPENDED_AUTHOR_DROP;
         let c = candidate_with_author(false, false, false);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -252,16 +222,13 @@ mod tests {
         is_nsfw_user: bool,
         is_nsfw_admin: bool,
     ) -> HydratedTweetCandidate {
-        HydratedTweetCandidate {
-            tweet_id: 1,
-            author_id: 100,
-            author_features: AuthorFeatures {
+        candidate()
+            .with_author_features(AuthorFeatures {
                 is_nsfw_user,
                 is_nsfw_admin,
                 ..Default::default()
-            },
-            ..Default::default()
-        }
+            })
+            .build()
     }
 
     #[test]
@@ -269,7 +236,7 @@ mod tests {
         let rule = NSFW_USER_AUTHOR_DROP;
         let c = candidate_with_nsfw_author(true, false);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(_)
         ));
     }
@@ -279,7 +246,7 @@ mod tests {
         let rule = NSFW_USER_AUTHOR_DROP;
         let c = candidate_with_nsfw_author(true, false);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(100), &c)),
+            rule.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Allow
         ));
     }
@@ -289,7 +256,7 @@ mod tests {
         let rule = NSFW_ADMIN_AUTHOR_DROP;
         let c = candidate_with_nsfw_author(false, true);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(_)
         ));
     }
@@ -299,7 +266,7 @@ mod tests {
         let rule = NSFW_ADMIN_AUTHOR_DROP;
         let c = candidate_with_nsfw_author(false, true);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(100), &c)),
+            rule.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Allow
         ));
     }
@@ -309,7 +276,7 @@ mod tests {
         let rule = NSFW_USER_AUTHOR_DROP;
         let c = candidate_with_nsfw_author(false, false);
         assert!(matches!(
-            rule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            rule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }

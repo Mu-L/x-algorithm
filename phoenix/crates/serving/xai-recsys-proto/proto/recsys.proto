@@ -1236,6 +1236,7 @@ message ScoreInfo {
   optional double finalScore = 3;
   SlateContext slateContext = 4;
   optional double rewardRerankSlotProb = 5;
+  optional uint32 rerankerHeadTag = 6;
 }
 
 message SlateContext {
@@ -1311,6 +1312,8 @@ message UserActionSequence {
   AdUserInfo adUserInfo = 7;
 
   repeated Mask masks = 8;
+
+  optional uint32 rerankerHeadTag = 9;
 }
 
 message UserActionList {

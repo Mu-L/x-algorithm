@@ -55,9 +55,8 @@ impl Rule for NsfwAuthorInterstitialRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        let candidate = context.candidate();
-        if candidate.is_nsfw_flagged()
-            && candidate.has_media()
+        if context.is_nsfw_flagged()
+            && context.has_media()
             && !context.is_author_viewer()
             && !context.viewer_allows_sensitive_media()
         {
@@ -70,107 +69,72 @@ impl Rule for NsfwAuthorInterstitialRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        AuthorFeatures, HydratedTweetCandidate, MediaFeature, NsfwFeature, SafetyLabel,
-        SafetyLabelMap, TweetFeatures, Viewer, ViewerFeatures,
+    use crate::models::{AuthorFeatures, HydratedTweetCandidate, NsfwFeature};
+    use crate::rules::fixtures::{
+        author_viewer, candidate, sensitive_opt_in_viewer, viewer, VIEWER_ID,
     };
-    use std::collections::HashMap;
-
-    fn viewer_default() -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(999),
-            allows_sensitive_media: false,
-            ..Default::default()
-        }
-    }
-
-    fn viewer_sensitive_opt_in() -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(999),
-            allows_sensitive_media: true,
-            ..Default::default()
-        }
-    }
-
-    fn candidate_with_label(label: SafetyLabelType) -> HydratedTweetCandidate {
-        let mut labels = HashMap::new();
-        labels.insert(label, SafetyLabel::default());
-        HydratedTweetCandidate {
-            tweet_id: 1,
-            author_id: 100,
-            safety_labels: SafetyLabelMap::new(labels),
-            ..Default::default()
-        }
-    }
 
     #[test]
     fn interstitial_blurs_non_opt_in() {
-        let c = candidate_with_label(SafetyLabelType::NSFW_HIGH_PRECISION);
+        let c = candidate()
+            .with_label(SafetyLabelType::NSFW_HIGH_PRECISION)
+            .build();
         assert!(matches!(
             NSFW_HIGH_PRECISION_INTERSTITIAL
-                .evaluate(&crate::rules::test_context(&viewer_default(), &c)),
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Interstitial(_)
         ));
     }
 
     #[test]
     fn interstitial_allows_opt_in() {
-        let c = candidate_with_label(SafetyLabelType::NSFW_HIGH_PRECISION);
+        let c = candidate()
+            .with_label(SafetyLabelType::NSFW_HIGH_PRECISION)
+            .build();
         assert!(matches!(
             NSFW_HIGH_PRECISION_INTERSTITIAL
-                .evaluate(&crate::rules::test_context(&viewer_sensitive_opt_in(), &c)),
+                .evaluate(&crate::rules::test_context(&sensitive_opt_in_viewer(), &c)),
             VfAction::Allow
         ));
     }
 
     #[test]
     fn interstitial_allows_self_view() {
-        let mut c = candidate_with_label(SafetyLabelType::NSFW_HIGH_PRECISION);
-        c.author_id = 999;
+        let c = candidate()
+            .with_label(SafetyLabelType::NSFW_HIGH_PRECISION)
+            .build();
         assert!(matches!(
             NSFW_HIGH_PRECISION_INTERSTITIAL
-                .evaluate(&crate::rules::test_context(&viewer_default(), &c)),
+                .evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Allow
         ));
     }
 
     #[test]
     fn interstitial_allows_no_label() {
-        let c = HydratedTweetCandidate {
-            tweet_id: 1,
-            ..Default::default()
-        };
+        let c = candidate().build();
         assert!(matches!(
             NSFW_HIGH_PRECISION_INTERSTITIAL
-                .evaluate(&crate::rules::test_context(&viewer_default(), &c)),
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
 
     fn nsfw_author_candidate() -> HydratedTweetCandidate {
-        HydratedTweetCandidate {
-            tweet_id: 1,
-            author_id: 100,
-            tweet_features: TweetFeatures {
-                media: MediaFeature {
-                    has_media: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            author_features: AuthorFeatures {
+        candidate()
+            .with_media()
+            .with_author_features(AuthorFeatures {
                 is_nsfw_user: true,
                 ..Default::default()
-            },
-            ..Default::default()
-        }
+            })
+            .build()
     }
 
     #[test]
     fn author_interstitial_blurs_non_opt_in() {
         assert!(matches!(
             NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(
-                &viewer_default(),
+                &viewer(VIEWER_ID),
                 &nsfw_author_candidate()
             )),
             VfAction::Interstitial(_)
@@ -181,7 +145,7 @@ mod tests {
     fn author_interstitial_allows_opt_in() {
         assert!(matches!(
             NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(
-                &viewer_sensitive_opt_in(),
+                &sensitive_opt_in_viewer(),
                 &nsfw_author_candidate()
             )),
             VfAction::Allow
@@ -193,7 +157,8 @@ mod tests {
         let mut c = nsfw_author_candidate();
         c.tweet_features.media.has_media = false;
         assert!(matches!(
-            NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(&viewer_default(), &c)),
+            NsfwAuthorInterstitialRule
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -212,7 +177,7 @@ mod tests {
     fn tweet_flag_interstitial_blurs_non_opt_in() {
         assert!(matches!(
             NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(
-                &viewer_default(),
+                &viewer(VIEWER_ID),
                 &nsfw_tweet_flag_candidate()
             )),
             VfAction::Interstitial(_)
@@ -227,7 +192,8 @@ mod tests {
             admin: true,
         };
         assert!(matches!(
-            NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(&viewer_default(), &c)),
+            NsfwAuthorInterstitialRule
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Interstitial(_)
         ));
     }
@@ -237,7 +203,8 @@ mod tests {
         let mut c = nsfw_tweet_flag_candidate();
         c.author_features.is_nsfw_admin = true;
         assert!(matches!(
-            NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(&viewer_default(), &c)),
+            NsfwAuthorInterstitialRule
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Interstitial(_)
         ));
     }
@@ -247,7 +214,8 @@ mod tests {
         let mut c = nsfw_tweet_flag_candidate();
         c.tweet_features.nsfw = NsfwFeature::default();
         assert!(matches!(
-            NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(&viewer_default(), &c)),
+            NsfwAuthorInterstitialRule
+                .evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -256,7 +224,7 @@ mod tests {
     fn tweet_flag_interstitial_allows_opt_in() {
         assert!(matches!(
             NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(
-                &viewer_sensitive_opt_in(),
+                &sensitive_opt_in_viewer(),
                 &nsfw_tweet_flag_candidate()
             )),
             VfAction::Allow
@@ -265,10 +233,9 @@ mod tests {
 
     #[test]
     fn tweet_flag_interstitial_allows_self_view() {
-        let mut c = nsfw_tweet_flag_candidate();
-        c.author_id = 999;
+        let c = nsfw_tweet_flag_candidate();
         assert!(matches!(
-            NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(&viewer_default(), &c)),
+            NsfwAuthorInterstitialRule.evaluate(&crate::rules::test_context(&author_viewer(), &c)),
             VfAction::Allow
         ));
     }

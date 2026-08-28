@@ -10,12 +10,10 @@ impl Rule for ViewerBlocksAuthorRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        let viewer = context.viewer();
-        let candidate = context.candidate();
-        if viewer.viewer_id().is_none() {
+        if context.viewer_is_logged_out() {
             return VfAction::Allow;
         }
-        if candidate.relationship.viewer_blocks_author {
+        if context.viewer_blocks_author() {
             return VfAction::Drop(FilteredReason::AuthorBlockViewer);
         }
         VfAction::Allow
@@ -30,12 +28,10 @@ impl Rule for MutedRetweetsRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        let viewer = context.viewer();
-        let candidate = context.candidate();
-        if viewer.viewer_id().is_none() {
+        if context.viewer_is_logged_out() {
             return VfAction::Allow;
         }
-        if candidate.is_retweet() && candidate.relationship.viewer_mutes_retweets_from_author {
+        if context.is_retweet() && context.viewer_mutes_retweets_from_author() {
             return VfAction::Drop(FilteredReason::UnspecifiedReason);
         }
         VfAction::Allow
@@ -50,12 +46,10 @@ impl Rule for ViewerMutesAuthorRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        let viewer = context.viewer();
-        let candidate = context.candidate();
-        if viewer.viewer_id().is_none() {
+        if context.viewer_is_logged_out() {
             return VfAction::Allow;
         }
-        if candidate.relationship.viewer_mutes_author {
+        if context.viewer_mutes_author() {
             return VfAction::Drop(FilteredReason::ViewerMutesAuthor);
         }
         VfAction::Allow
@@ -70,25 +64,23 @@ impl Rule for DropExclusiveTweetContentRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        let viewer = context.viewer();
-        let candidate = context.candidate();
-        let Some(exc) = &candidate.exclusive_content else {
+        if !context.is_exclusive_tweet() {
             return VfAction::Allow;
-        };
+        }
 
-        let Some(viewer_id) = viewer.viewer_id() else {
+        if context.viewer_is_logged_out() {
             return VfAction::Drop(FilteredReason::ExclusiveTweet);
-        };
+        }
 
-        if viewer_id == exc.conversation_author_id {
+        if context.viewer_is_conversation_author() {
             return VfAction::Allow;
         }
 
-        if exc.viewer_super_follows_author {
+        if context.viewer_super_follows_author() {
             return VfAction::Allow;
         }
 
-        if !candidate.is_retweet() && context.is_author_viewer() {
+        if !context.is_retweet() && context.is_author_viewer() {
             return VfAction::Allow;
         }
 
@@ -100,59 +92,27 @@ impl Rule for DropExclusiveTweetContentRule {
 mod tests {
     use super::*;
     use crate::models::{
-        ExclusiveContentFeatures, HydratedTweetCandidate, TweetFeatures, Viewer,
-        ViewerAuthorRelationship, ViewerFeatures,
+        ExclusiveContentFeatures, HydratedTweetCandidate, ViewerAuthorRelationship,
     };
-
-    fn viewer(id: u64) -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedIn(id),
-            ..Default::default()
-        }
-    }
-
-    fn logged_out_viewer() -> ViewerFeatures {
-        ViewerFeatures {
-            viewer: Viewer::LoggedOut,
-            ..Default::default()
-        }
-    }
+    use crate::rules::fixtures::{author_viewer, candidate, logged_out_viewer, viewer, VIEWER_ID};
 
     fn exclusive_candidate(
         tweet_id: u64,
         author_id: u64,
         root_author_id: u64,
     ) -> HydratedTweetCandidate {
-        HydratedTweetCandidate {
-            tweet_id,
-            author_id,
-            exclusive_content: Some(ExclusiveContentFeatures {
-                conversation_author_id: root_author_id,
-                viewer_super_follows_author: false,
-            }),
-            tweet_features: TweetFeatures::default(),
-            ..Default::default()
-        }
-    }
-
-    fn non_exclusive_candidate() -> HydratedTweetCandidate {
-        HydratedTweetCandidate {
-            tweet_id: 1,
-            author_id: 100,
-            tweet_features: TweetFeatures::default(),
-            ..Default::default()
-        }
+        let mut c = candidate().tweet_id(tweet_id).author_id(author_id).build();
+        c.exclusive_content = Some(ExclusiveContentFeatures {
+            conversation_author_id: root_author_id,
+            viewer_super_follows_author: false,
+        });
+        c
     }
 
     fn candidate_with_relationship(
         relationship: ViewerAuthorRelationship,
     ) -> HydratedTweetCandidate {
-        HydratedTweetCandidate {
-            tweet_id: 1,
-            author_id: 100,
-            relationship,
-            ..Default::default()
-        }
+        candidate().with_relationship(relationship).build()
     }
 
     #[test]
@@ -162,7 +122,7 @@ mod tests {
             ..Default::default()
         });
         assert!(matches!(
-            ViewerBlocksAuthorRule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            ViewerBlocksAuthorRule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::AuthorBlockViewer)
         ));
     }
@@ -171,7 +131,7 @@ mod tests {
     fn viewer_does_not_block_author_allows() {
         let c = candidate_with_relationship(ViewerAuthorRelationship::default());
         assert!(matches!(
-            ViewerBlocksAuthorRule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            ViewerBlocksAuthorRule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -195,7 +155,7 @@ mod tests {
             ..Default::default()
         });
         assert!(matches!(
-            ViewerMutesAuthorRule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            ViewerMutesAuthorRule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::ViewerMutesAuthor)
         ));
     }
@@ -204,7 +164,7 @@ mod tests {
     fn viewer_does_not_mute_author_allows() {
         let c = candidate_with_relationship(ViewerAuthorRelationship::default());
         assert!(matches!(
-            ViewerMutesAuthorRule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            ViewerMutesAuthorRule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
@@ -223,13 +183,15 @@ mod tests {
 
     #[test]
     fn muted_retweets_drops_retweet_from_muting_viewer() {
-        let mut c = candidate_with_relationship(ViewerAuthorRelationship {
-            viewer_mutes_retweets_from_author: true,
-            ..Default::default()
-        });
-        c.tweet_features.core.source_tweet_id = Some(99);
+        let c = candidate()
+            .with_relationship(ViewerAuthorRelationship {
+                viewer_mutes_retweets_from_author: true,
+                ..Default::default()
+            })
+            .retweet_of(99)
+            .build();
         assert!(matches!(
-            MutedRetweetsRule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            MutedRetweetsRule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Drop(FilteredReason::UnspecifiedReason)
         ));
     }
@@ -241,18 +203,20 @@ mod tests {
             ..Default::default()
         });
         assert!(matches!(
-            MutedRetweetsRule.evaluate(&crate::rules::test_context(&viewer(999), &c)),
+            MutedRetweetsRule.evaluate(&crate::rules::test_context(&viewer(VIEWER_ID), &c)),
             VfAction::Allow
         ));
     }
 
     #[test]
     fn muted_retweets_allows_logged_out_viewer() {
-        let mut c = candidate_with_relationship(ViewerAuthorRelationship {
-            viewer_mutes_retweets_from_author: true,
-            ..Default::default()
-        });
-        c.tweet_features.core.source_tweet_id = Some(99);
+        let c = candidate()
+            .with_relationship(ViewerAuthorRelationship {
+                viewer_mutes_retweets_from_author: true,
+                ..Default::default()
+            })
+            .retweet_of(99)
+            .build();
         assert!(matches!(
             MutedRetweetsRule.evaluate(&crate::rules::test_context(&logged_out_viewer(), &c)),
             VfAction::Allow
@@ -263,8 +227,8 @@ mod tests {
     fn non_exclusive_tweet_is_allowed() {
         let rule = DropExclusiveTweetContentRule;
         let action = rule.evaluate(&crate::rules::test_context(
-            &viewer(999),
-            &non_exclusive_candidate(),
+            &viewer(VIEWER_ID),
+            &candidate().build(),
         ));
         assert!(matches!(action, VfAction::Allow));
     }
@@ -287,7 +251,7 @@ mod tests {
     fn root_author_can_see_own_exclusive() {
         let rule = DropExclusiveTweetContentRule;
         let candidate = exclusive_candidate(1, 100, 100);
-        let action = rule.evaluate(&crate::rules::test_context(&viewer(100), &candidate));
+        let action = rule.evaluate(&crate::rules::test_context(&author_viewer(), &candidate));
         assert!(matches!(action, VfAction::Allow));
     }
 
