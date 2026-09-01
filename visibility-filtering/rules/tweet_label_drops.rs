@@ -34,10 +34,10 @@ impl Rule for SafetyLabelDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if !context.has_tweet_safety_label(self.label) {
+        if !context.tweet().has_safety_label(self.label) {
             return VfAction::Allow;
         }
-        if self.exempt_author && context.is_author_viewer() {
+        if self.exempt_author && context.viewer().is_author() {
             return VfAction::Allow;
         }
         VfAction::Drop(self.reason.clone())

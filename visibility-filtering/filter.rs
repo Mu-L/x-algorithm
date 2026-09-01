@@ -121,7 +121,7 @@ impl FilterTweets {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
     use crate::clients::socialgraph_client::MockSocialgraphClient;
     use crate::safety_label_source::lookup::{ManhattanLookup, RemoteSource, TwemcacheLookup};
@@ -169,10 +169,14 @@ mod tests {
         }
     }
 
-    fn filter_tweets() -> FilterTweets {
+    pub(crate) fn filter_tweets() -> FilterTweets {
+        filter_tweets_with_gizmoduck(Arc::new(MockGizmoduckClient::default()))
+    }
+
+    pub(crate) fn filter_tweets_with_gizmoduck(
+        gizmoduck: Arc<dyn GizmoduckClient + Send + Sync>,
+    ) -> FilterTweets {
         let tes: Arc<dyn TESClient + Send + Sync> = Arc::new(MockTESClient::default());
-        let gizmoduck: Arc<dyn GizmoduckClient + Send + Sync> =
-            Arc::new(MockGizmoduckClient::default());
         let socialgraph = Arc::new(MockSocialgraphClient::default());
         let twemcache = Arc::new(FakeTwemcache);
         let manhattan = Arc::new(FakeManhattan);
@@ -191,6 +195,12 @@ mod tests {
             Policies::new(),
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filter::test_support::filter_tweets;
 
     fn candidate(tweet_id: u64, author_id: Option<u64>) -> RawCandidate {
         RawCandidate {

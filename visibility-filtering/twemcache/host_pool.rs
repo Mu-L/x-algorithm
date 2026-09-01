@@ -78,9 +78,9 @@ type BestConn = Option<(usize, Arc<PipelinedConnection>, usize)>;
 pub struct HostPool {
     factory: Arc<dyn ConnFactory>,
     slots: Vec<Mutex<ConnSlot>>,
-            open_lock: TokioMutex<()>,
+    open_lock: TokioMutex<()>,
     depth_cap: usize,
-        probe_stale_after: Duration,
+    probe_stale_after: Duration,
     clock: Clock,
     metrics: Metrics,
 }
@@ -187,7 +187,7 @@ impl HostPool {
         result
     }
 
-                            async fn select(&self, now: Instant) -> Result<Selected> {
+    async fn select(&self, now: Instant) -> Result<Selected> {
         let (best, live_exists) = {
             let (best, live_exists, any_need) = self.scan();
             if any_need {
@@ -216,7 +216,7 @@ impl HostPool {
         }
     }
 
-            fn scan(&self) -> (BestConn, bool, bool) {
+    fn scan(&self) -> (BestConn, bool, bool) {
         let mut best: BestConn = None;
         let mut live_exists = false;
         let mut any_need = false;
@@ -236,7 +236,7 @@ impl HostPool {
         (best, live_exists, any_need)
     }
 
-                        async fn ensure_live_open(&self, now: Instant) {
+    async fn ensure_live_open(&self, now: Instant) {
         let any_need = self.slots.iter().any(|s| {
             let g = s.lock().unwrap();
             g.health.is_live() && !g.has_living_conn()
@@ -279,14 +279,14 @@ impl HostPool {
         }
     }
 
-                    async fn try_open_probe(&self, now: Instant) -> Option<(usize, Arc<PipelinedConnection>)> {
+    async fn try_open_probe(&self, now: Instant) -> Option<(usize, Arc<PipelinedConnection>)> {
         let idx = {
             let mut claimed = None;
             for (i, slot) in self.slots.iter().enumerate() {
                 let mut g = slot.lock().unwrap();
                 if g.health.is_probe_eligible(now, self.probe_stale_after) {
                     g.health.begin_probe(now);
-                    g.conn = None; 
+                    g.conn = None;
                     claimed = Some(i);
                     break;
                 }
@@ -331,7 +331,7 @@ impl HostPool {
         }
     }
 
-            pub(crate) fn for_each_depth(&self, mut sink: impl FnMut(usize)) {
+    pub(crate) fn for_each_depth(&self, mut sink: impl FnMut(usize)) {
         for slot in &self.slots {
             let g = slot.lock().unwrap();
             if let Some(c) = &g.conn {

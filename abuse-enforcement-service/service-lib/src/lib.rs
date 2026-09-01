@@ -42,16 +42,15 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{Instrument, error, info, warn};
 use xai_kafka::{
-    BatchConsumerConfig, BatchResult, CancellationToken, KafkaBatchProcessor, KafkaConsumerBuilder,
-    KafkaConsumerConfig, KafkaMessage, KafkaProducer, KafkaProducerConfigBuilder, SslConfig,
+    BatchConsumerConfig, BatchResult, CancellationToken, KafkaBatchProcessor, KafkaConsumerConfig,
+    KafkaConsumerConfigBuilder, KafkaMessage, KafkaProducer, KafkaProducerConfigBuilder,
     apply_auth_config, resolve_kafka_brokers, run_batch_consumer, self_delete_pod,
 };
 use xai_service_runner::{ServerBuilder, ServerInfo};
-use xai_wily::WilyConfig;
 
 use xai_strato::{Strato, StratoClientConfig};
 
-use crate::config::{Config, KafkaConnConfig};
+use crate::config::Config;
 use crate::decision::Decision;
 use crate::facts::{EntityFacts, EntityType, Facts, PostFacts, ScoreFacts, UserFacts};
 use crate::growthbook::DynamicConfig;
@@ -663,24 +662,8 @@ async fn run_enforcement(
     Ok(outcome)
 }
 
-fn sasl_ssl_config(conn: &KafkaConnConfig, password: &str) -> SslConfig {
-    SslConfig {
-        security_protocol: "SASL_SSL".to_string(),
-        sasl_mechanism: Some(conn.sasl_mechanism.clone()),
-        sasl_username: Some(conn.sasl_username.clone()),
-        sasl_password: Some(password.to_owned()),
-    }
-}
-
 async fn build_kafka_producers(cfg: &Config, dynamic_config: &DynamicConfig) -> KafkaProducers {
     let mut producers = KafkaProducers::default();
-
-    let conn = cfg.kafka_producer();
-    let sasl_password = conn.sasl_password.clone();
-
-    if !cfg.kafka_producer_mtls_enabled && sasl_password.is_none() {
-        return producers;
-    }
 
     for (name, spec) in dynamic_config.kafka_producers() {
         if !spec.enabled {
@@ -691,28 +674,16 @@ async fn build_kafka_producers(cfg: &Config, dynamic_config: &DynamicConfig) -> 
             warn!("kafka producer '{name}' enabled but no topic set; skipping");
             continue;
         };
-        let producer_config = if cfg.kafka_producer_mtls_enabled {
-            match KafkaProducerConfigBuilder::for_cluster_mtls_auto(
-                &cfg.kafka_producer_mtls_cluster,
-                topic.clone(),
-                Some(&cfg.kafka_producer_mtls_zone),
-            ) {
-                Ok(builder) => builder.build(),
-                Err(e) => {
-                    error!("kafka producer '{name}' mTLS config failed; skipping: {e}");
-                    continue;
-                }
+        let producer_config = match KafkaProducerConfigBuilder::for_cluster_mtls_auto(
+            &cfg.kafka_producer_mtls_cluster,
+            topic.clone(),
+            Some(&cfg.kafka_producer_mtls_zone),
+        ) {
+            Ok(builder) => builder.build(),
+            Err(e) => {
+                error!("kafka producer '{name}' mTLS config failed; skipping: {e}");
+                continue;
             }
-        } else {
-            KafkaProducerConfigBuilder::new(conn.dest.clone(), topic.clone())
-                .with_wily_config(WilyConfig::default())
-                .with_ssl(sasl_ssl_config(
-                    &conn,
-                    sasl_password
-                        .as_deref()
-                        .expect("SASL password checked before producer construction"),
-                ))
-                .build()
         };
         let mut producer = KafkaProducer::new(producer_config);
         match producer.start().await {
@@ -1441,6 +1412,10 @@ async fn kafka_health_watchdog(
     }
 }
 
+const KAFKA_PREFLIGHT_ATTEMPTS: u32 = 3;
+const KAFKA_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
+const KAFKA_PREFLIGHT_BACKOFF: Duration = Duration::from_secs(2);
+
 async fn probe_broker_reachability(config: KafkaConsumerConfig, timeout: Duration) -> Result<()> {
     use rdkafka::ClientConfig;
     use rdkafka::consumer::{BaseConsumer, Consumer};
@@ -1479,14 +1454,11 @@ pub async fn start_kafka_consumers(
     state: Arc<service::AppState>,
     cfg: &Config,
 ) -> Result<JoinHandle<()>> {
-    let consumer_conn = cfg.kafka_consumer();
-    let Some(sasl_password) = consumer_conn.sasl_password.clone() else {
-        info!(
-            "no Kafka consumer credential (KAFKA_SASL_PASSWORD / KAFKA_CONSUMER_SASL_PASSWORD unset) — Kafka consumer disabled"
-        );
+    if !cfg.kafka_consumer_enabled {
+        info!("KAFKA_CONSUMER_ENABLED=false — Kafka consumer disabled");
         state.kafka_ready.store(true, Ordering::Relaxed);
         return Ok(tokio::spawn(async {}));
-    };
+    }
 
     let growthbook_enabled = cfg.growthbook_url.is_some() && cfg.growthbook_key.is_some();
     let topic_labels_json: serde_json::Value =
@@ -1539,25 +1511,24 @@ pub async fn start_kafka_consumers(
     }
 
     if cfg.kafka_self_delete_enabled && !topics.is_empty() {
-        const PREFLIGHT_ATTEMPTS: u32 = 3;
-        const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
-        const PREFLIGHT_BACKOFF: Duration = Duration::from_secs(2);
-
         let probe_topic = topics.keys().min().expect("topics non-empty").clone();
-        let probe_config: KafkaConsumerConfig = KafkaConsumerBuilder::new(
-            consumer_conn.dest.clone(),
+        let probe_config = KafkaConsumerConfigBuilder::for_cluster_mtls_auto(
+            &cfg.kafka_consumer_mtls_cluster,
             probe_topic.clone(),
             format!("{}-preflight", cfg.kafka_group_id()),
+            Some(&cfg.kafka_consumer_mtls_zone),
         )
-        .with_wily_config(WilyConfig::default())
-        .with_ssl(sasl_ssl_config(&consumer_conn, &sasl_password))
-        .into();
+        .context("failed to configure Phoenix mTLS consumer preflight")?
+        .with_enable_auto_offset_store(false)
+        .with_enable_auto_commit(false)
+        .with_fetch_timeout_ms(10000)
+        .build();
 
         let mut attempt = 0u32;
         loop {
             attempt += 1;
             let start = std::time::Instant::now();
-            match probe_broker_reachability(probe_config.clone(), PREFLIGHT_TIMEOUT).await {
+            match probe_broker_reachability(probe_config.clone(), KAFKA_PREFLIGHT_TIMEOUT).await {
                 Ok(()) => {
                     info!(
                         attempt,
@@ -1567,18 +1538,18 @@ pub async fn start_kafka_consumers(
                     );
                     break;
                 }
-                Err(e) if attempt < PREFLIGHT_ATTEMPTS => {
+                Err(e) if attempt < KAFKA_PREFLIGHT_ATTEMPTS => {
                     warn!(
                         topic = %probe_topic,
-                        "Kafka broker preflight attempt {attempt}/{PREFLIGHT_ATTEMPTS} failed \
-                         (retrying in {PREFLIGHT_BACKOFF:?}): {e:#}"
+                        "Kafka broker preflight attempt {attempt}/{KAFKA_PREFLIGHT_ATTEMPTS} failed \
+                         (retrying in {KAFKA_PREFLIGHT_BACKOFF:?}): {e:#}"
                     );
-                    tokio::time::sleep(PREFLIGHT_BACKOFF).await;
+                    tokio::time::sleep(KAFKA_PREFLIGHT_BACKOFF).await;
                 }
                 Err(e) => {
                     error!(
                         topic = %probe_topic,
-                        "Kafka broker preflight failed after {PREFLIGHT_ATTEMPTS} attempts — \
+                        "Kafka broker preflight failed after {KAFKA_PREFLIGHT_ATTEMPTS} attempts — \
                          likely a bad node; self-deleting to reschedule: {e:#}"
                     );
                     metrics::KAFKA_SELF_DELETE_TOTAL
@@ -1586,7 +1557,7 @@ pub async fn start_kafka_consumers(
                         .inc();
                     self_delete_pod().await;
                     return Err(anyhow::anyhow!(
-                        "Kafka broker preflight failed after {PREFLIGHT_ATTEMPTS} attempts: {e:#}"
+                        "Kafka broker preflight failed after {KAFKA_PREFLIGHT_ATTEMPTS} attempts: {e:#}"
                     ));
                 }
             }
@@ -1790,24 +1761,25 @@ pub async fn start_kafka_consumers(
         max_in_flight, "Kafka consumer batch limits"
     );
 
-    let make_batch_config = |topic: &str| {
-        let kafka = KafkaConsumerBuilder::new(
-            consumer_conn.dest.clone(),
+    let make_batch_config = |topic: &str| -> Result<BatchConsumerConfig> {
+        let kafka = KafkaConsumerConfigBuilder::for_cluster_mtls_auto(
+            &cfg.kafka_consumer_mtls_cluster,
             topic.to_owned(),
-            format!("{}-{}", kafka_group_id, topic),
+            topic_consumer_group_id(&kafka_group_id, topic),
+            Some(&cfg.kafka_consumer_mtls_zone),
         )
-        .with_wily_config(WilyConfig::default())
-        .with_ssl(sasl_ssl_config(&consumer_conn, &sasl_password))
+        .with_context(|| format!("failed to configure Phoenix mTLS consumer for {topic}"))?
         .with_enable_auto_offset_store(false)
         .with_enable_auto_commit(false)
-        .with_fetch_timeout_ms(10000);
+        .with_fetch_timeout_ms(10000)
+        .build();
 
-        BatchConsumerConfig::new(kafka, SERVICE_NAME)
-            .with_max_messages_per_poll(max_messages_per_poll)
+        Ok(BatchConsumerConfig::new(kafka, SERVICE_NAME)
+            .with_max_messages_per_poll(max_messages_per_poll))
     };
 
     for (topic, topic_cfg) in topics {
-        let batch_config = make_batch_config(&topic);
+        let batch_config = make_batch_config(&topic)?;
         let cancel = cancel.clone();
 
         match topic_cfg {
@@ -1875,6 +1847,10 @@ pub async fn start_kafka_consumers(
             let _ = h.await;
         }
     }))
+}
+
+fn topic_consumer_group_id(base_group_id: &str, topic: &str) -> String {
+    format!("{base_group_id}-{topic}")
 }
 
 pub async fn serve(router: Router, cfg: &Config) -> Result<()> {
@@ -1945,6 +1921,36 @@ mod router_split_tests {
             .layer(axum::middleware::from_fn(pass));
         let public = Router::new().route("/rate_limit/{entity_type}", get(ok));
         let _app: Router = protected.merge(public);
+    }
+}
+
+#[cfg(test)]
+mod kafka_topic_config_tests {
+    use super::{
+        KAFKA_PREFLIGHT_ATTEMPTS, KAFKA_PREFLIGHT_BACKOFF, KAFKA_PREFLIGHT_TIMEOUT,
+        topic_consumer_group_id,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn dynamic_topics_keep_distinct_existing_group_ids() {
+        let base_group_id = "xai-abuse-enforcement-service";
+
+        assert_eq!(
+            topic_consumer_group_id(base_group_id, "scores.primary"),
+            "xai-abuse-enforcement-service-scores.primary"
+        );
+        assert_eq!(
+            topic_consumer_group_id(base_group_id, "scores.secondary"),
+            "xai-abuse-enforcement-service-scores.secondary"
+        );
+    }
+
+    #[test]
+    fn preflight_retry_budget_stays_bounded() {
+        assert_eq!(KAFKA_PREFLIGHT_ATTEMPTS, 3);
+        assert_eq!(KAFKA_PREFLIGHT_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(KAFKA_PREFLIGHT_BACKOFF, Duration::from_secs(2));
     }
 }
 

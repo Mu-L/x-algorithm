@@ -5,10 +5,7 @@ import com.twitter.recos.entities.thriftscala.Entity
 import com.twitter.recos.entities.thriftscala.Hashtag
 import com.twitter.recos.entities.thriftscala.SemanticCoreEntity
 import com.twitter.scalding._
-import com.twitter.scalding_internal.dalv2.DAL
 import com.twitter.scalding_internal.dalv2.DALWrite._
-import com.twitter.scalding_internal.dalv2.remote_access.ExplicitLocation
-import com.twitter.scalding_internal.dalv2.remote_access.ProcAtla
 import com.twitter.scalding_internal.multiformat.format.keyval.KeyVal
 import com.twitter.simclusters_v2.common.ModelVersions
 import com.twitter.simclusters_v2.common.SimClustersEmbedding
@@ -215,20 +212,8 @@ trait EntityToSimClustersEmbeddingApp extends ScheduledExecutionApp {
 
     val simClustersEmbedding = jobConfig.modelVersion match {
       case ModelVersion.Model20m145k2020 =>
-        val interestedIn2020WithFallback =
-          SimclustersV2InterestedIn20M145K2020ScalaDataset.copy(fallbackPath = Some("viewfs://hadoop-nn.example.invalid/user/cassowary/manhattan_sequence_files/" +
-            s"simclusters_v2_interested_in_20M_145K_2020/_TMP_RECOVERY/${dateRange.start.timestamp}"))
-        val simClustersSource2020 = DAL
-          .readMostRecentSnapshot(
-            interestedIn2020WithFallback,
-            dateRange.prepend(Days(28)(timeZone))
-          )
-          .withRemoteReadPolicy(ExplicitLocation(ProcAtla))
-          .toTypedPipe
-          .map {
-            case KeyVal(userId, clustersUserIsInterestedIn) =>
-              (userId, clustersUserIsInterestedIn)
-          }
+        val simClustersSource2020 =
+          InterestedInSources.simClustersInterestedIn2020Source(dateRange, timeZone)
         computeEmbeddings(
           simClustersSource2020,
           normalizedUserEntityMatrix,

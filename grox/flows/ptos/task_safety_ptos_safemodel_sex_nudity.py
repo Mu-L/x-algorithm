@@ -13,7 +13,7 @@ from grox.flows.ptos.state import SafetyPolicyCategory, SafetyPtosState
 from grox.core.schedules.types import TaskContext
 from grox.core.tasks.task import Task, TaskWithPost, TaskResultCategory
 from monitor.metrics import Metrics
-from grox.flows.ptos.constants import SAFETY_PTOS_DELUXE
+from grox.flows.ptos.constants import DELUXE_TIER_TASK_TYPES
 from grox.flows.ptos.prior_nsfw import post_is_already_flagged_nsfw
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ class TaskSafetyPtosSafemodelSexNudity(TaskWithPost):
 
     @classmethod
     async def _run(cls, ctx: TaskContext, post: Post) -> None:
-        is_deluxe = ctx.payload.task_type == SAFETY_PTOS_DELUXE
+        is_deluxe = ctx.payload.task_type in DELUXE_TIER_TASK_TYPES
         flow = "deluxe" if is_deluxe else "standard"
 
         if not is_deluxe and not cls._has_adult_content_suspicion(ctx):

@@ -110,6 +110,7 @@ class MediaHydrationConfig(BaseModel):
     image_tile_size: int = 448
     enable_light_dark_enhancement: bool = False
     enable_clahe_enhancement: bool = False
+    enable_motion_reveal: bool = False
     deluxe_fav_count_threshold: int = 64
     deluxe_video_max_frames: int = 30
     deluxe_video_tile_size: int = 600

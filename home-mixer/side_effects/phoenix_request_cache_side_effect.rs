@@ -94,7 +94,7 @@ impl SideEffect<ScoredPostsQuery, PostCandidate> for PhoenixRequestCacheSideEffe
         let mut tweet_infos = build_tweet_infos(query, &input.selected_candidates);
         if log_slate_context {
             for (info, candidate) in tweet_infos.iter_mut().zip(input.selected_candidates.iter()) {
-                info.score_info = Some(candidate.as_score_info());
+                info.score_info = Some(candidate.as_score_info_no_prediction_scores());
             }
         }
         for candidate in tweet_infos {
@@ -251,8 +251,7 @@ mod tests {
         )
         .await;
         let score_info = t1.score_info.expect("score_info should be set");
-        assert_eq!(score_info.prediction_scores["favorite"], 0.25);
-        assert_eq!(score_info.prediction_scores["vqv"], 0.0);
+        assert!(score_info.prediction_scores.is_empty());
         assert_eq!(score_info.weighted_score, Some(0.9));
         assert_eq!(score_info.final_score, Some(0.6));
         let slate_context = score_info

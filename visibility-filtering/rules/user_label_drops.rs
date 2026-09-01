@@ -33,15 +33,15 @@ impl Rule for UserSafetyLabelDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.is_author_viewer() {
+        if context.viewer().is_author() {
             return VfAction::Allow;
         }
-        if !context.author_has_user_label(self.label) {
+        if !context.author().has_user_label(self.label) {
             return VfAction::Allow;
         }
         if self.require_non_follower
-            && !context.viewer_is_logged_out()
-            && context.viewer_follows_author()
+            && !context.viewer().is_logged_out()
+            && context.viewer().follows_author()
         {
             return VfAction::Allow;
         }

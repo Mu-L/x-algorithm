@@ -63,6 +63,9 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFFollowingCandidateHydrator 
             client
                 .get_result(post_ids, TimelineHome, query.user_id, context)
                 .await
+                .into_iter()
+                .map(|(id, r)| (id, r.map(|t| t.reason)))
+                .collect()
         };
 
         let mut hydrated_candidates = Vec::with_capacity(candidates.len());

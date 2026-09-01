@@ -10,7 +10,7 @@ impl Rule for DropStaleTweetsRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.is_stale_tweet() && !context.is_retweet() {
+        if context.tweet().is_stale() && !context.tweet().is_retweet() {
             return VfAction::Drop(FilteredReason::UnspecifiedReason);
         }
         VfAction::Allow
@@ -25,7 +25,7 @@ impl Rule for DropLegalTakendownPostRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if !context.is_author_viewer() && context.legal_takedown_in_viewer_country() {
+        if !context.viewer().is_author() && context.takedown().legal_in_viewer_country() {
             return VfAction::Drop(FilteredReason::UnspecifiedReason);
         }
         VfAction::Allow
@@ -40,7 +40,7 @@ impl Rule for DropLocalLawsTakendownPostRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if !context.is_author_viewer() && context.local_laws_takedown_in_viewer_country() {
+        if !context.viewer().is_author() && context.takedown().local_laws_in_viewer_country() {
             return VfAction::Drop(FilteredReason::UnspecifiedReason);
         }
         VfAction::Allow
@@ -55,7 +55,7 @@ impl Rule for DropTweetsWithGeoRestrictedMediaRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.media_restricted_in_viewer_country() {
+        if context.takedown().media_restricted_in_viewer_country() {
             return VfAction::Drop(FilteredReason::UnspecifiedReason);
         }
         VfAction::Allow
@@ -70,7 +70,7 @@ impl Rule for DropTweetsWithDmcaMediaRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.has_dmca_media() {
+        if context.tweet().has_dmca_media() {
             return VfAction::Drop(FilteredReason::UnspecifiedReason);
         }
         VfAction::Allow

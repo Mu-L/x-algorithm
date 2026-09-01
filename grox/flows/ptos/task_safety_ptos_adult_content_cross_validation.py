@@ -5,7 +5,7 @@ from grox.core.data_loaders.data_types import Post
 from grox.core.schedules.types import TaskContext
 from grox.core.tasks.task import Task, TaskResultCategory, TaskWithPost
 from grox.flows.ptos.classifier import SafetyPtosAdultContentCrossValidationJudge
-from grox.flows.ptos.constants import SAFETY_PTOS_DELUXE
+from grox.flows.ptos.constants import DELUXE_TIER_TASK_TYPES, SAFETY_PTOS_SPECIAL_VIDEO
 from grox.flows.ptos.state import (
     SafetyPolicy,
     SafetyPolicyCategory,
@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _METRIC_PREFIX = "task.safety_ptos_adult_content_cross_validation"
 _CROSS_VALIDATION_REASON = "Grok 4.5 Cross Validation disagreed"
+_CROSS_VALIDATION_FAILED_REASON = "Grok 4.5 Cross Validation failed"
 
 
 class CompareOutcome(str, Enum):
@@ -55,7 +56,7 @@ class TaskSafetyPtosAdultContentCrossValidation(TaskWithPost):
         if not state.safemodel_sex_nudity.scored:
             return
 
-        is_deluxe = ctx.payload.task_type == SAFETY_PTOS_DELUXE
+        is_deluxe = ctx.payload.task_type in DELUXE_TIER_TASK_TYPES
         flow = "deluxe" if is_deluxe else "standard"
         safemodel_positive = state.safemodel_sex_nudity.positive
         violations = (
@@ -104,9 +105,15 @@ class TaskSafetyPtosAdultContentCrossValidation(TaskWithPost):
             judged = await cls._judge.judge(post)
         except Exception as e:
             Metrics.counter(metric).add(1, attributes={"outcome": "error"})
-            logger.warning(
-                f"Post {post.id}: grok 4.5 cross validation failed, keeping original decision: {e}"
-            )
+            if ctx.payload.task_type == SAFETY_PTOS_SPECIAL_VIDEO:
+                logger.warning(
+                    f"Post {post.id}: grok 4.5 cross validation failed, failing closed to Soft: {e}"
+                )
+                cls._apply_soft_verdict(ctx, _CROSS_VALIDATION_FAILED_REASON)
+            else:
+                logger.warning(
+                    f"Post {post.id}: grok 4.5 cross validation failed, keeping original decision: {e}"
+                )
             return
 
         is_hard = judged.policyType == SafetyPolicyType.AdultContentSexualHard
@@ -117,6 +124,10 @@ class TaskSafetyPtosAdultContentCrossValidation(TaskWithPost):
         if is_hard:
             return
 
+        cls._apply_soft_verdict(ctx, _CROSS_VALIDATION_REASON)
+
+    @classmethod
+    def _apply_soft_verdict(cls, ctx: TaskContext, reason: str) -> None:
         state = ctx.state(SafetyPtosState)
         violations = state.annotations.violatedPolicies or []
         adult_violations = [
@@ -125,15 +136,13 @@ class TaskSafetyPtosAdultContentCrossValidation(TaskWithPost):
         if not adult_violations:
             adult_violations = [
                 SafetyPtosViolatedPolicy(
-                    category=SafetyPolicyCategory.AdultContent,
-                    reason=_CROSS_VALIDATION_REASON,
+                    category=SafetyPolicyCategory.AdultContent, reason=reason
                 )
             ]
             violations.append(adult_violations[0])
         for violation in adult_violations:
             violation.safetyPolicy = SafetyPolicy(
-                policyType=SafetyPolicyType.AdultContentSexualSoft,
-                reason=_CROSS_VALIDATION_REASON,
+                policyType=SafetyPolicyType.AdultContentSexualSoft, reason=reason
             )
         state.annotations.violatedPolicies = violations
         state.safemodel_sex_nudity.positive = False

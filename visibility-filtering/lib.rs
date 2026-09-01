@@ -6,6 +6,7 @@ pub(crate) mod filter_tweets;
 pub(crate) mod get_safety_labels;
 pub mod hydration;
 pub mod models;
+pub mod params;
 pub(crate) mod reference_compare;
 pub mod rules;
 pub mod safety_label_source;

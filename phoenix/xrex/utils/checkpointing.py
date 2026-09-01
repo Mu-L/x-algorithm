@@ -233,10 +233,7 @@ def save_checkpoint(
     checkpointer = get_checkpointer(timeout_secs, save_concurrent_gb=save_concurrent_gb)
 
     with tracer.start_as_current_span("wait_for_previous_checkpoint"):
-        try:
-            checkpointer.wait_until_finished()
-        except Exception as e:
-            rank_logger.error("Error waiting for previous checkpoint: %s", e)
+        checkpointer.wait_until_finished()
 
     dest = os.path.join(path, tag)
     if os.path.exists(dest):

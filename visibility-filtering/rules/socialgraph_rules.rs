@@ -10,10 +10,10 @@ impl Rule for ViewerBlocksAuthorRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.viewer_is_logged_out() {
+        if context.viewer().is_logged_out() {
             return VfAction::Allow;
         }
-        if context.viewer_blocks_author() {
+        if context.viewer().blocks_author() {
             return VfAction::Drop(FilteredReason::AuthorBlockViewer);
         }
         VfAction::Allow
@@ -28,10 +28,10 @@ impl Rule for MutedRetweetsRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.viewer_is_logged_out() {
+        if context.viewer().is_logged_out() {
             return VfAction::Allow;
         }
-        if context.is_retweet() && context.viewer_mutes_retweets_from_author() {
+        if context.tweet().is_retweet() && context.viewer().mutes_retweets_from_author() {
             return VfAction::Drop(FilteredReason::UnspecifiedReason);
         }
         VfAction::Allow
@@ -46,10 +46,10 @@ impl Rule for ViewerMutesAuthorRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.viewer_is_logged_out() {
+        if context.viewer().is_logged_out() {
             return VfAction::Allow;
         }
-        if context.viewer_mutes_author() {
+        if context.viewer().mutes_author() {
             return VfAction::Drop(FilteredReason::ViewerMutesAuthor);
         }
         VfAction::Allow
@@ -64,23 +64,23 @@ impl Rule for DropExclusiveTweetContentRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if !context.is_exclusive_tweet() {
+        if !context.tweet().is_exclusive() {
             return VfAction::Allow;
         }
 
-        if context.viewer_is_logged_out() {
+        if context.viewer().is_logged_out() {
             return VfAction::Drop(FilteredReason::ExclusiveTweet);
         }
 
-        if context.viewer_is_conversation_author() {
+        if context.viewer().is_conversation_author() {
             return VfAction::Allow;
         }
 
-        if context.viewer_super_follows_author() {
+        if context.viewer().super_follows_author() {
             return VfAction::Allow;
         }
 
-        if !context.is_retweet() && context.is_author_viewer() {
+        if !context.tweet().is_retweet() && context.viewer().is_author() {
             return VfAction::Allow;
         }
 

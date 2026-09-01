@@ -34,12 +34,12 @@ impl Rule for TweetFlagDropRule {
 
 pub const TWEET_NSFW_USER_DROP: TweetFlagDropRule = TweetFlagDropRule::new(
     "TweetNsfwUserDropRule",
-    |context| context.has_tweet_nsfw_user_flag(),
+    |context| context.tweet().has_nsfw_user_flag(),
     FilteredReason::ContainNsfwMedia,
 );
 pub const TWEET_NSFW_ADMIN_DROP: TweetFlagDropRule = TweetFlagDropRule::new(
     "TweetNsfwAdminDropRule",
-    |context| context.has_tweet_nsfw_admin_flag(),
+    |context| context.tweet().has_nsfw_admin_flag(),
     FilteredReason::ContainNsfwMedia,
 );
 

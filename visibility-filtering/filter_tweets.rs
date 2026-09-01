@@ -33,6 +33,8 @@ impl FilterTweetsEndpoint {
         let start = Instant::now();
         let req = request.into_inner();
         ft_metrics::record_batch_size(req.tweets.len());
+        let viewer_id = normalize_viewer_id(req.viewer_id);
+        ft_metrics::record_viewer_state(req.viewer_id, viewer_id);
 
         let safety_level = match req.safety_level() {
             vf_pb::SafetyLevel::FilterAll => SafetyLevel::FilterAll,
@@ -70,7 +72,7 @@ impl FilterTweetsEndpoint {
         let response = self
             .filter_tweets
             .run(FilterRequest {
-                viewer_id: req.viewer_id,
+                viewer_id,
                 country_code: req.country_code,
                 safety_level,
                 candidates,
@@ -109,6 +111,10 @@ impl FilterTweetsEndpoint {
     }
 }
 
+fn normalize_viewer_id(raw: Option<u64>) -> Option<u64> {
+    raw.filter(|&id| id as i64 > 0)
+}
+
 fn to_visibility_result(outcome: FilterOutcome) -> vf_pb::TweetVisibilityResult {
     let (kind, filtered_reason) = match outcome.verdict.action {
         VfAction::Allow => (vf_pb::action::Kind::Allow(true), None),
@@ -143,6 +149,45 @@ mod tests {
             },
             safety_labels: None,
         }
+    }
+
+    async fn gizmoduck_calls(viewer_id: Option<u64>) -> usize {
+        let gizmoduck = std::sync::Arc::new(
+            xai_core_entities::gizmoduck_client::MockGizmoduckClient::default(),
+        );
+        let endpoint = FilterTweetsEndpoint::new(
+            crate::filter::test_support::filter_tweets_with_gizmoduck(gizmoduck.clone()),
+            None,
+        );
+        let response = endpoint
+            .handle(Request::new(vf_pb::VisibilityFilterRequest {
+                safety_level: vf_pb::SafetyLevel::TimelineHome.into(),
+                tweets: vec![vf_pb::TweetInput {
+                    tweet_id: 2,
+                    author_id: Some(20),
+                }],
+                viewer_id,
+                country_code: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(response.into_inner().results.len(), 1);
+        gizmoduck.call_count()
+    }
+
+    #[tokio::test]
+    async fn endpoint_treats_zero_viewer_id_as_logged_out() {
+        let logged_out = gizmoduck_calls(None).await;
+        assert_eq!(gizmoduck_calls(Some(0)).await, logged_out);
+        assert_eq!(gizmoduck_calls(Some(42)).await, logged_out + 1);
+    }
+
+    #[test]
+    fn normalize_viewer_id_cases() {
+        assert_eq!(normalize_viewer_id(Some(0)), None);
+        assert_eq!(normalize_viewer_id(Some(u64::MAX)), None);
+        assert_eq!(normalize_viewer_id(Some(42)), Some(42));
+        assert_eq!(normalize_viewer_id(None), None);
     }
 
     #[test]

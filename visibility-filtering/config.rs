@@ -8,8 +8,15 @@ pub const ENV_FALLBACK_CACHE_SERVE_STALE_ENABLED: &str = "VF_FALLBACK_CACHE_SERV
 pub const ENV_FALLBACK_CACHE_POPULATE_ENABLED: &str = "VF_FALLBACK_CACHE_POPULATE_ENABLED";
 pub const ENV_CACHE_WARM_SAMPLE_PCT: &str = "VF_CACHE_WARM_SAMPLE_PCT";
 pub const ENV_APP_ENV: &str = "APP_ENV";
+pub const ENV_FS_PATH: &str = "VF_FS_PATH";
 pub const ENV_GIZMODUCK_CLIENT_ID: &str = "VF_GIZMODUCK_CLIENT_ID";
 pub const ENV_TWEMCACHE_CLIENT_NAME: &str = "VF_TWEMCACHE_CLIENT_NAME";
+
+pub const DEFAULT_FS_PATH: &str = "/usr/local/config/features/visibility/main/rust_vf.yml";
+
+pub fn fs_path() -> String {
+    std::env::var(ENV_FS_PATH).unwrap_or_else(|_| DEFAULT_FS_PATH.to_string())
+}
 
 pub fn gizmoduck_client_id() -> String {
     resolve_gizmoduck_client_id(

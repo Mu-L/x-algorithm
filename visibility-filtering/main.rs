@@ -25,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     XServiceBuilder::new("visibility-filtering-service")
+        .with_featureswitches(xai_visibility_filtering_service::config::fs_path())
         .grpc_port(args.grpc_port)
         .metrics_port(args.metrics_port)
         .datacenter(args.datacenter)

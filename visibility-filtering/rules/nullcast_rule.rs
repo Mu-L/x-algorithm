@@ -10,7 +10,10 @@ impl Rule for NullcastedTweetDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.is_nullcast() && !context.is_retweet() && !context.is_community_tweet() {
+        if context.tweet().is_nullcast()
+            && !context.tweet().is_retweet()
+            && !context.tweet().is_community_tweet()
+        {
             return VfAction::Drop(FilteredReason::TweetIsNullcast);
         }
         VfAction::Allow

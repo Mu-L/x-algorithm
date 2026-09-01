@@ -25,7 +25,7 @@ impl Rule for AuthorFlagDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if (self.flag)(context) && !context.is_author_viewer() {
+        if (self.flag)(context) && !context.viewer().is_author() {
             return VfAction::Drop(self.reason.clone());
         }
         VfAction::Allow
@@ -34,32 +34,32 @@ impl Rule for AuthorFlagDropRule {
 
 pub const SUSPENDED_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "SuspendedAuthorRule",
-    |context| context.author_is_suspended(),
+    |context| context.author().is_suspended(),
     FilteredReason::AuthorIsSuspended,
 );
 pub const DEACTIVATED_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "DeactivatedAuthorRule",
-    |context| context.author_is_deactivated(),
+    |context| context.author().is_deactivated(),
     FilteredReason::AuthorIsDeactivated,
 );
 pub const ERASED_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "ErasedAuthorRule",
-    |context| context.author_is_erased(),
+    |context| context.author().is_erased(),
     FilteredReason::AuthorAccountIsInactive,
 );
 pub const OFFBOARDED_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "OffboardedAuthorRule",
-    |context| context.author_is_offboarded(),
+    |context| context.author().is_offboarded(),
     FilteredReason::AuthorAccountIsInactive,
 );
 pub const NSFW_USER_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "DropNsfwUserAuthorRule",
-    |context| context.author_is_nsfw_user(),
+    |context| context.author().is_nsfw_user(),
     FilteredReason::ContainNsfwMedia,
 );
 pub const NSFW_ADMIN_AUTHOR_DROP: AuthorFlagDropRule = AuthorFlagDropRule::new(
     "DropNsfwAdminAuthorRule",
-    |context| context.author_is_nsfw_admin(),
+    |context| context.author().is_nsfw_admin(),
     FilteredReason::ContainNsfwMedia,
 );
 
@@ -71,9 +71,9 @@ impl Rule for ProtectedAuthorDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.author_is_protected()
-            && !context.is_author_viewer()
-            && (context.viewer_is_logged_out() || !context.viewer_follows_author())
+        if context.author().is_protected()
+            && !context.viewer().is_author()
+            && (context.viewer().is_logged_out() || !context.viewer().follows_author())
         {
             return VfAction::Drop(FilteredReason::AuthorIsProtected);
         }

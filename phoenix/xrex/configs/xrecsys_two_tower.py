@@ -333,13 +333,7 @@ _H100_OVERRIDES = {
     "attn_impl": "pallas_ranker_varlen_attn",
 }
 
-_GB300_OVERRIDES = {
-    "bs_per_device": 768,
-    "ep": 32,
-    "attn_impl": "cutedsl_ranker_varlen_attn",
-    "remat_policy": RematType.SAVE_GB300_RECSYS,
-    "unroll_layer_stack": True,
-}
+_GB300_OVERRIDES = {"bs_per_device": 960, "ep": 64, "attn_impl": "cutedsl_ranker_varlen_attn"}
 
 
 MODEL_CFGS = {

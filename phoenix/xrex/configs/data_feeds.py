@@ -292,6 +292,7 @@ def _retrieval_aggregated_kafka(
         output_vocab_size=mparams["output_vocab_size"],
         use_post_sid=use_post_sid,
         sid_num_levels=sid_num_levels,
+        exclude_required_columns=mparams.get("exclude_required_columns", ""),
         **extra_kwargs,
     )
 
@@ -326,6 +327,7 @@ def _retrieval_rust_kafka(
         output_vocab_size=mparams["output_vocab_size"],
         use_post_sid=use_post_sid,
         sid_num_levels=sid_num_levels,
+        exclude_required_columns=mparams.get("exclude_required_columns", ""),
         **extra_kwargs,
     )
 

@@ -1,29 +1,30 @@
 use crate::models::{SafetyLabelType, VfAction};
+use crate::params::NsfwGatingCountries;
 use crate::rules::{Rule, RuleContext};
+use std::sync::Arc;
 use xai_visibility_filtering::models::FilteredReason;
 
-const NSFW_GATING_COUNTRIES: [&str; 16] = [
-    "ar", "au", "br", "ca", "de", "es", "fr", "gb", "id", "it", "kr", "mx", "nl", "ph", "pt", "th",
-];
-
 fn nsfw_base_condition(context: &RuleContext<'_>) -> bool {
-    !context.is_author_viewer()
-        && context.has_media()
-        && (context.has_tweet_safety_label(SafetyLabelType::NSFW_HIGH_PRECISION)
-            || context.has_tweet_safety_label(SafetyLabelType::NSFW_HIGH_RECALL)
-            || (context.is_nsfw_flagged() && !context.is_retweet()))
+    let tweet = context.tweet();
+    !context.viewer().is_author()
+        && tweet.has_media()
+        && (tweet.has_safety_label(SafetyLabelType::NSFW_HIGH_PRECISION)
+            || tweet.has_safety_label(SafetyLabelType::NSFW_HIGH_RECALL)
+            || (tweet.is_nsfw_flagged() && !tweet.is_retweet()))
 }
 
 fn graphic_base_condition(context: &RuleContext<'_>) -> bool {
-    !context.is_author_viewer()
-        && context.has_media()
-        && context.has_tweet_safety_label(SafetyLabelType::GORE_AND_VIOLENCE_HIGH_PRECISION)
+    let tweet = context.tweet();
+    !context.viewer().is_author()
+        && tweet.has_media()
+        && tweet.has_safety_label(SafetyLabelType::GORE_AND_VIOLENCE_HIGH_PRECISION)
 }
 
 fn nsfw_no_media_label_condition(context: &RuleContext<'_>) -> bool {
-    !context.is_author_viewer()
-        && (context.has_tweet_safety_label(SafetyLabelType::NSFW_TEXT)
-            || context.has_tweet_safety_label(SafetyLabelType::NSFW_CARD_IMAGE))
+    let tweet = context.tweet();
+    !context.viewer().is_author()
+        && (tweet.has_safety_label(SafetyLabelType::NSFW_TEXT)
+            || tweet.has_safety_label(SafetyLabelType::NSFW_CARD_IMAGE))
 }
 
 fn sensitive_base_condition(context: &RuleContext<'_>) -> bool {
@@ -40,7 +41,7 @@ impl Rule for SensitiveViewerLoggedOutDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.viewer_is_logged_out() && sensitive_base_condition(context) {
+        if context.viewer().is_logged_out() && sensitive_base_condition(context) {
             VfAction::Drop(FilteredReason::ContainNsfwMedia)
         } else {
             VfAction::Allow
@@ -56,7 +57,7 @@ impl Rule for SensitiveViewerUnderageDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.viewer_is_underage() && sensitive_base_condition(context) {
+        if context.viewer().is_underage() && sensitive_base_condition(context) {
             VfAction::Drop(FilteredReason::ContainNsfwMedia)
         } else {
             VfAction::Allow
@@ -64,7 +65,15 @@ impl Rule for SensitiveViewerUnderageDropRule {
     }
 }
 
-pub struct SensitiveViewerNoStatedAgeDropRule;
+pub struct SensitiveViewerNoStatedAgeDropRule {
+    gating_countries: Arc<NsfwGatingCountries>,
+}
+
+impl SensitiveViewerNoStatedAgeDropRule {
+    pub fn new(gating_countries: Arc<NsfwGatingCountries>) -> Self {
+        Self { gating_countries }
+    }
+}
 
 impl Rule for SensitiveViewerNoStatedAgeDropRule {
     fn name(&self) -> &'static str {
@@ -72,8 +81,11 @@ impl Rule for SensitiveViewerNoStatedAgeDropRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.viewer_has_no_stated_age()
-            && context.viewer_country_in(&NSFW_GATING_COUNTRIES)
+        if context.viewer().has_no_stated_age()
+            && context
+                .viewer()
+                .country()
+                .is_some_and(|c| self.gating_countries.contains(c))
             && sensitive_base_condition(context)
         {
             VfAction::Drop(FilteredReason::ContainNsfwMedia)
@@ -101,6 +113,10 @@ mod tests {
 
     fn media_candidate_with_label(label: SafetyLabelType) -> HydratedTweetCandidate {
         candidate().with_label(label).with_media().build()
+    }
+
+    fn no_stated_age_rule() -> SensitiveViewerNoStatedAgeDropRule {
+        SensitiveViewerNoStatedAgeDropRule::new(Arc::new(NsfwGatingCountries::new()))
     }
 
     fn nsfw_author_media_candidate() -> HydratedTweetCandidate {
@@ -185,7 +201,7 @@ mod tests {
             VfAction::Allow
         ));
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(
+            no_stated_age_rule().evaluate(&crate::rules::test_context(
                 &gating_viewer(ViewerAge::Unknown),
                 &c
             )),
@@ -227,7 +243,7 @@ mod tests {
     fn no_stated_age_drops_nsfw_text_in_jurisdiction() {
         let c = no_media_candidate_with_label(SafetyLabelType::NSFW_TEXT);
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(
+            no_stated_age_rule().evaluate(&crate::rules::test_context(
                 &gating_viewer(ViewerAge::NotStated),
                 &c
             )),
@@ -243,7 +259,7 @@ mod tests {
             ..gating_viewer(ViewerAge::NotStated)
         };
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(&v, &c)),
+            no_stated_age_rule().evaluate(&crate::rules::test_context(&v, &c)),
             VfAction::Allow
         ));
     }
@@ -297,7 +313,7 @@ mod tests {
             VfAction::Allow
         ));
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(
+            no_stated_age_rule().evaluate(&crate::rules::test_context(
                 &gating_viewer(ViewerAge::Unknown),
                 &c
             )),
@@ -348,7 +364,7 @@ mod tests {
     fn no_stated_age_drops_in_jurisdiction() {
         let c = media_candidate_with_label(SafetyLabelType::NSFW_HIGH_PRECISION);
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(
+            no_stated_age_rule().evaluate(&crate::rules::test_context(
                 &gating_viewer(ViewerAge::NotStated),
                 &c
             )),
@@ -364,7 +380,7 @@ mod tests {
             ..gating_viewer(ViewerAge::NotStated)
         };
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(&v, &c)),
+            no_stated_age_rule().evaluate(&crate::rules::test_context(&v, &c)),
             VfAction::Allow
         ));
     }
@@ -377,7 +393,7 @@ mod tests {
             ..gating_viewer(ViewerAge::NotStated)
         };
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(&v, &c)),
+            no_stated_age_rule().evaluate(&crate::rules::test_context(&v, &c)),
             VfAction::Allow
         ));
     }
@@ -391,7 +407,7 @@ mod tests {
             ..gating_viewer(ViewerAge::NotStated)
         };
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(&v, &c)),
+            no_stated_age_rule().evaluate(&crate::rules::test_context(&v, &c)),
             VfAction::Allow
         ));
     }
@@ -405,7 +421,7 @@ mod tests {
             ..gating_viewer(ViewerAge::NotStated)
         };
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(&v, &c)),
+            no_stated_age_rule().evaluate(&crate::rules::test_context(&v, &c)),
             VfAction::Drop(_)
         ));
     }
@@ -419,7 +435,7 @@ mod tests {
             ..gating_viewer(ViewerAge::NotStated)
         };
         assert!(matches!(
-            SensitiveViewerNoStatedAgeDropRule.evaluate(&crate::rules::test_context(&v, &c)),
+            no_stated_age_rule().evaluate(&crate::rules::test_context(&v, &c)),
             VfAction::Drop(_)
         ));
     }

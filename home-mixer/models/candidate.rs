@@ -162,7 +162,7 @@ pub trait CandidateHelpers {
     fn get_original_tweet_id(&self) -> u64;
     fn get_original_author_id(&self) -> u64;
     fn as_tweet_info(&self, is_followed_by_viewer: bool) -> xai_recsys_proto::TweetInfo;
-    fn as_score_info(&self) -> xai_recsys_proto::ScoreInfo;
+    fn as_score_info_no_prediction_scores(&self) -> xai_recsys_proto::ScoreInfo;
 }
 
 impl CandidateHelpers for PostCandidate {
@@ -187,9 +187,9 @@ impl CandidateHelpers for PostCandidate {
         self.retweeted_user_id.unwrap_or(self.author_id)
     }
 
-    fn as_score_info(&self) -> xai_recsys_proto::ScoreInfo {
+    fn as_score_info_no_prediction_scores(&self) -> xai_recsys_proto::ScoreInfo {
         xai_recsys_proto::ScoreInfo {
-            prediction_scores: self.phoenix_scores.as_prediction_scores(),
+            prediction_scores: Default::default(),
             weighted_score: self.weighted_score,
             final_score: self.score,
             slate_context: self.slate_context.map(|c| xai_recsys_proto::SlateContext {
@@ -210,6 +210,7 @@ impl CandidateHelpers for PostCandidate {
                 recon_gap_above: c.recon_gap_above,
             }),
             reward_rerank_slot_prob: None,
+            page_decode_slot_prob: None,
             reranker_head_tag: self.reranker_head_tag,
         }
     }

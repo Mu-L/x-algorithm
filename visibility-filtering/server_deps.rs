@@ -85,7 +85,10 @@ where
     }
 }
 
-pub async fn build_prod_server(datacenter: &str) -> VFServer {
+pub async fn build_prod_server(
+    datacenter: &str,
+    feature_switches: Arc<xai_feature_switches::FeatureSwitches>,
+) -> VFServer {
     info!("Initializing prod clients for datacenter={}", datacenter);
 
     let init_deadline = tokio::time::Instant::now() + CLIENT_INIT_RETRY_BUDGET;
@@ -207,7 +210,11 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
         safety_label_source.clone(),
         fallback_cache_mode,
     );
-    let policies = crate::rules::Policies::new();
+    let gating_countries = Arc::new(crate::params::NsfwGatingCountries::new());
+    let fs_path = crate::config::fs_path();
+    gating_countries.refresh_and_check_drift(&feature_switches, &fs_path);
+    gating_countries.spawn_refresh(feature_switches, fs_path);
+    let policies = crate::rules::Policies::with_nsfw_gating_countries(gating_countries);
     let (home_rule_count, recommendations_rule_count) = policies.rule_counts();
     let filter_tweets = FilterTweets::new(hydration_pipeline, policies);
 

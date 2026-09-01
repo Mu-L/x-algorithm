@@ -338,7 +338,7 @@ impl ReferenceCompareHarness {
         harness
     }
 
-            pub(crate) fn begin_compare(
+    pub(crate) fn begin_compare(
         self: &Arc<Self>,
         viewer_id: Option<u64>,
         country_code: Option<String>,
@@ -370,13 +370,17 @@ impl ReferenceCompareHarness {
             let (reference_outcome, verdicts) =
                 futures::future::join(tokio::time::timeout(REFERENCE_TIMEOUT, reference_fut), rx)
                     .await;
-            let reference_results = match reference_outcome {
-                Ok(results) => results,
-                Err(_) => {
-                    harness.incr(ERROR, &[("kind", "timeout")]);
-                    return;
-                }
-            };
+            let reference_results: HashMap<u64, anyhow::Result<Option<FilteredReason>>> =
+                match reference_outcome {
+                    Ok(results) => results
+                        .into_iter()
+                        .map(|(id, r)| (id, r.map(|t| t.reason)))
+                        .collect(),
+                    Err(_) => {
+                        harness.incr(ERROR, &[("kind", "timeout")]);
+                        return;
+                    }
+                };
             let Ok(verdicts) = verdicts else { return };
             let context = CompareContext {
                 viewer_id,
@@ -427,6 +431,8 @@ mod tests {
     use xai_visibility_filtering::models::{
         Action, DropReason, KeywordMatch, SafetyResult as ReferenceSafetyResult,
     };
+    use xai_visibility_filtering::tweet_safety_label::SafetyLabelFailure;
+    use xai_visibility_filtering::vf_client::TweetVisibility;
 
     fn reference_allow() -> Option<FilteredReason> {
         None
@@ -625,7 +631,7 @@ mod tests {
         }
     }
 
-        const ID: u64 = 1_000_000_000_000_000_000;
+    const ID: u64 = 1_000_000_000_000_000_000;
 
     #[test]
     fn identical_pairs_group_into_one_diffs_entry() {
@@ -728,8 +734,19 @@ mod tests {
             safety_level: ReferenceSafetyLevel,
             for_user_id: u64,
             context: Option<TwitterContextViewer>,
-        ) -> HashMap<u64, anyhow::Result<Option<FilteredReason>>> {
-            let results = tweet_ids.iter().map(|&id| (id, Ok(None))).collect();
+        ) -> HashMap<u64, anyhow::Result<TweetVisibility>> {
+            let results = tweet_ids
+                .iter()
+                .map(|&id| {
+                    (
+                        id,
+                        Ok(TweetVisibility {
+                            reason: None,
+                            safety_labels: Err(SafetyLabelFailure::LookupFailed),
+                        }),
+                    )
+                })
+                .collect();
             self.calls.lock().unwrap().push((
                 tweet_ids,
                 safety_level,

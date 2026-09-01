@@ -20,9 +20,9 @@ impl Rule for NsfwMediaInterstitialRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.has_tweet_safety_label(self.label)
-            && !context.is_author_viewer()
-            && !context.viewer_allows_sensitive_media()
+        if context.tweet().has_safety_label(self.label)
+            && !context.viewer().is_author()
+            && !context.viewer().allows_sensitive_media()
         {
             return VfAction::Interstitial(FilteredReason::ContainNsfwMedia);
         }
@@ -55,10 +55,10 @@ impl Rule for NsfwAuthorInterstitialRule {
     }
 
     fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
-        if context.is_nsfw_flagged()
-            && context.has_media()
-            && !context.is_author_viewer()
-            && !context.viewer_allows_sensitive_media()
+        if context.tweet().is_nsfw_flagged()
+            && context.tweet().has_media()
+            && !context.viewer().is_author()
+            && !context.viewer().allows_sensitive_media()
         {
             return VfAction::Interstitial(FilteredReason::ContainNsfwMedia);
         }
