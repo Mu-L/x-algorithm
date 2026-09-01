@@ -1,19 +1,13 @@
+mod author_rules;
 pub mod context;
 #[cfg(test)]
 pub(crate) mod fixtures;
 #[cfg(test)]
 mod golden_corpus;
 pub mod metrics;
-pub mod nsfw_age_gating;
-pub mod nsfw_interstitial;
-pub mod nullcast_rule;
 pub mod registry;
-pub mod socialgraph_rules;
-pub mod tes_rules;
-pub mod tweet_flag_rules;
-pub mod tweet_label_drops;
-pub mod user_label_drops;
-pub mod user_rules;
+mod rule_spec;
+mod tweet_rules;
 
 use crate::models::VfAction;
 use xai_visibility_filtering::models::FilteredReason;
@@ -72,7 +66,16 @@ pub(crate) fn test_context<'a>(
     viewer: &'a crate::models::ViewerFeatures,
     candidate: &'a crate::models::HydratedTweetCandidate,
 ) -> RuleContext<'a> {
-    RuleContext::new(SafetyLevel::TimelineHome, viewer, candidate)
+    use std::sync::LazyLock;
+
+    static NSFW_GATING_COUNTRIES: LazyLock<crate::params::NsfwGatingCountries> =
+        LazyLock::new(crate::params::NsfwGatingCountries::new);
+    RuleContext::new(
+        SafetyLevel::TimelineHome,
+        viewer,
+        candidate,
+        &NSFW_GATING_COUNTRIES,
+    )
 }
 
 #[cfg(test)]

@@ -415,6 +415,11 @@ class RecsysTrainer(Trainer):
 
     checkpoint_storage_urls: str = ""
 
+    export_stablehlo_bundle: bool = False
+    export_bundle_bs_per_device: str = "1,2,4"
+    export_bundle_history_seq_len: int = 0
+    export_bundle_candidate_seq_len: int = 0
+
     smoothing_windows: list[int] = field(default_factory=lambda: [1_048_576, 4_194_304])
 
     reset_data_position: bool = False
@@ -453,11 +458,14 @@ class RecsysTrainer(Trainer):
             assert isinstance(self.model_config, RecsysAggregatedModelConfig)
             hl = self.model_config.history_seq_len
             self.seqpack_distribution = FixedLengthDistribution(min_len=hl, max_len=hl, mean_len=hl)
+        if self.export_stablehlo_bundle and not self.checkpoint_config.copy_port:
+            raise ValueError("export_stablehlo_bundle requires checkpoint_config.copy_port")
 
     state: RecsysTrainingState = field(init=False, repr=False, compare=False)
     _pending_shmem_ckpt_write_s: float | None = field(default=None, init=False, repr=False)
     _pending_checksum_s: float | None = field(default=None, init=False, repr=False)
     _pending_gc_collect_s: float | None = field(default=None, init=False, repr=False)
+    _stablehlo_bundle_files: list | None = field(default=None, init=False, repr=False)
 
     _engine = None
     _shmem_write_pool = None
@@ -2824,6 +2832,46 @@ class RecsysTrainer(Trainer):
             return self.dataset.get_data_position()
         return self._batch_pipeline.current.data_position
 
+    def _maybe_build_stablehlo_bundle(self) -> list | None:
+        if not self.export_stablehlo_bundle:
+            return None
+        if self._stablehlo_bundle_files is None:
+            from xrex.train.recsys_bundle_export import build_bundle
+
+            try:
+                start = time.perf_counter()
+                self._stablehlo_bundle_files = build_bundle(self)
+                rank_logger.info(
+                    "Built StableHLO bundle (%d files, %.1fs); it will be included in "
+                    "every copy_port checkpoint publish",
+                    len(self._stablehlo_bundle_files),
+                    time.perf_counter() - start,
+                )
+            except Exception:
+                rank_logger.exception(
+                    "StableHLO bundle export failed; disabling for the rest of this run "
+                    "(copy_port checkpoints continue without export/)"
+                )
+                self._stablehlo_bundle_files = []
+        if self._engine is None:
+            return None
+        return self._stablehlo_bundle_files or None
+
+    def _write_stablehlo_bundle_files(self, prefix: str, bundle_files: list | None) -> None:
+        try:
+            for bundle_file in bundle_files or ():
+                bundle_path = f"{OUT_PATH}/.{prefix}/{bundle_file.name}"
+                os.makedirs(os.path.dirname(bundle_path), exist_ok=True)
+                _write_all_bytes(bundle_path, memoryview(bundle_file.data))
+        except OSError:
+            rank_logger.exception(
+                "StableHLO bundle write failed; disabling for the rest of this run "
+                "(this publish continues without export/)"
+            )
+            self._stablehlo_bundle_files = []
+            for subdir in {f.name.split("/", 1)[0] for f in bundle_files or ()}:
+                shutil.rmtree(f"{OUT_PATH}/.{prefix}/{subdir}", ignore_errors=True)
+
     def _write_shmem_checkpoint(
         self,
         write_items: list[tuple[str, typing.Any, npt.NDArray]],
@@ -2831,6 +2879,7 @@ class RecsysTrainer(Trainer):
         data_pos: typing.Any,
         prefix: str,
         stub: typing.Any,
+        bundle_files: list | None = None,
     ) -> float:
         start = time.perf_counter()
         proc_idx = jax.process_index()
@@ -2899,6 +2948,7 @@ class RecsysTrainer(Trainer):
                     },
                     f,
                 )
+            self._write_stablehlo_bundle_files(prefix, bundle_files)
             if data_pos is not None:
                 with open(f"{OUT_PATH}/.{prefix}/{_DATA_POSITION_FILENAME}", "w") as f:
                     json.dump(data_pos, f)
@@ -3173,6 +3223,8 @@ class RecsysTrainer(Trainer):
 
             data_pos = self._checkpoint_data_position() if self._engine is not None else None
 
+            bundle_files = self._maybe_build_stablehlo_bundle()
+
             self._shmem_write_future = self._shmem_write_pool.submit(
                 self._write_shmem_checkpoint,
                 write_items,
@@ -3180,6 +3232,7 @@ class RecsysTrainer(Trainer):
                 data_pos,
                 prefix,
                 stub,
+                bundle_files,
             )
 
             if store != Store.FS:

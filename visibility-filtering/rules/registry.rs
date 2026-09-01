@@ -1,28 +1,9 @@
-use crate::models::{HydratedTweetCandidate, VfAction, ViewerFeatures};
+use crate::models::{HydratedTweetCandidate, ViewerFeatures};
 use crate::params::NsfwGatingCountries;
-use crate::rules::nsfw_age_gating::{
-    SensitiveViewerLoggedOutDropRule, SensitiveViewerNoStatedAgeDropRule,
-    SensitiveViewerUnderageDropRule,
-};
-use crate::rules::nsfw_interstitial::{
-    NsfwAuthorInterstitialRule, GORE_AND_VIOLENCE_INTERSTITIAL, NSFW_CARD_IMAGE_INTERSTITIAL,
-    NSFW_HIGH_PRECISION_INTERSTITIAL,
-};
-use crate::rules::nullcast_rule::NullcastedTweetDropRule;
-use crate::rules::socialgraph_rules::{
-    DropExclusiveTweetContentRule, MutedRetweetsRule, ViewerBlocksAuthorRule, ViewerMutesAuthorRule,
-};
-use crate::rules::tes_rules::{
-    DropLegalTakendownPostRule, DropLocalLawsTakendownPostRule, DropStaleTweetsRule,
-    DropTweetsWithDmcaMediaRule, DropTweetsWithGeoRestrictedMediaRule,
-};
-use crate::rules::tweet_flag_rules as tweet_flag;
-use crate::rules::tweet_label_drops as tweet_label;
-use crate::rules::user_label_drops as user_label;
-use crate::rules::user_rules::{self as author, ProtectedAuthorDropRule};
+use crate::rules::rule_spec::RuleSpec;
+use crate::rules::{author_rules, tweet_rules};
 use crate::rules::{evaluate_rules, Rule, RuleContext, Verdict};
 use std::sync::Arc;
-use xai_visibility_filtering::models::FilteredReason;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SafetyLevel {
@@ -45,6 +26,7 @@ pub struct Policies {
     filter_all: Vec<Box<dyn Rule>>,
     timeline_home: Vec<Box<dyn Rule>>,
     timeline_home_recommendations: Vec<Box<dyn Rule>>,
+    nsfw_gating_countries: Arc<NsfwGatingCountries>,
 }
 
 impl Policies {
@@ -54,9 +36,10 @@ impl Policies {
 
     pub fn with_nsfw_gating_countries(gating_countries: Arc<NsfwGatingCountries>) -> Self {
         Self {
-            filter_all: vec![Box::new(FilterAllRule)],
-            timeline_home: timeline_home_policy(&gating_countries),
-            timeline_home_recommendations: timeline_home_recommendations_policy(&gating_countries),
+            filter_all: rule_specs(tweet_rules::FILTER_ALL).collect(),
+            timeline_home: timeline_home_policy(),
+            timeline_home_recommendations: timeline_home_recommendations_policy(),
+            nsfw_gating_countries: gating_countries,
         }
     }
 
@@ -74,7 +57,7 @@ impl Policies {
         viewer: &ViewerFeatures,
         candidate: &HydratedTweetCandidate,
     ) -> Verdict {
-        let context = RuleContext::new(level, viewer, candidate);
+        let context = RuleContext::new(level, viewer, candidate, &self.nsfw_gating_countries);
         evaluate_rules(self.select(level), &context)
     }
 
@@ -97,98 +80,48 @@ impl Default for Policies {
     }
 }
 
-struct FilterAllRule;
-
-impl Rule for FilterAllRule {
-    fn name(&self) -> &'static str {
-        "FilterAllRule"
-    }
-
-    fn evaluate(&self, _context: &RuleContext<'_>) -> VfAction {
-        VfAction::Drop(FilteredReason::UnspecifiedReason)
-    }
+fn rule_specs(specs: &'static [RuleSpec]) -> impl Iterator<Item = Box<dyn Rule>> {
+    specs
+        .iter()
+        .map(|spec| Box::new(spec.clone()) as Box<dyn Rule>)
 }
 
-fn base_home_rules(gating_countries: &Arc<NsfwGatingCountries>) -> Vec<Box<dyn Rule>> {
-    vec![
-        Box::new(author::SUSPENDED_AUTHOR_DROP),
-        Box::new(author::DEACTIVATED_AUTHOR_DROP),
-        Box::new(author::ERASED_AUTHOR_DROP),
-        Box::new(author::OFFBOARDED_AUTHOR_DROP),
-        Box::new(ProtectedAuthorDropRule),
-        Box::new(ViewerBlocksAuthorRule),
-        Box::new(ViewerMutesAuthorRule),
-        Box::new(MutedRetweetsRule),
-        Box::new(tweet_label::PDNA_DROP),
-        Box::new(tweet_label::BOUNCE_DROP),
-        Box::new(tweet_label::SPAM_DROP),
-        Box::new(tweet_label::FOR_EMERGENCY_USE_ONLY_DROP),
-        Box::new(tweet_label::FOSNR_HATEFUL_CONDUCT_DROP),
-        Box::new(tweet_label::FOSNR_VIOLENT_SPEECH_DROP),
-        Box::new(tweet_label::FOSNR_ABUSE_DROP),
-        Box::new(tweet_label::FOSNR_CIVIC_INTEGRITY_DROP),
-        Box::new(NullcastedTweetDropRule),
-        Box::new(DropStaleTweetsRule),
-        Box::new(DropLegalTakendownPostRule),
-        Box::new(DropLocalLawsTakendownPostRule),
-        Box::new(SensitiveViewerLoggedOutDropRule),
-        Box::new(SensitiveViewerUnderageDropRule),
-        Box::new(SensitiveViewerNoStatedAgeDropRule::new(Arc::clone(
-            gating_countries,
-        ))),
-        Box::new(DropExclusiveTweetContentRule),
-        Box::new(NSFW_HIGH_PRECISION_INTERSTITIAL),
-        Box::new(GORE_AND_VIOLENCE_INTERSTITIAL),
-        Box::new(NSFW_CARD_IMAGE_INTERSTITIAL),
-        Box::new(NsfwAuthorInterstitialRule),
-    ]
+fn base_home_rules() -> Vec<Box<dyn Rule>> {
+    let mut rules: Vec<Box<dyn Rule>> = Vec::new();
+    rules.extend(rule_specs(author_rules::AUTHOR_STATE_DROPS));
+    rules.extend(rule_specs(author_rules::SOCIALGRAPH_DROPS));
+    rules.extend(rule_specs(tweet_rules::TWEET_LABEL_DROPS));
+    rules.extend(rule_specs(tweet_rules::NULLCAST_DROP));
+    rules.extend(rule_specs(tweet_rules::TES_HOME_DROPS));
+    rules.extend(rule_specs(tweet_rules::SENSITIVE_VIEWER_DROPS));
+    rules.extend(rule_specs(tweet_rules::EXCLUSIVE_TWEET_DROP));
+    rules.extend(rule_specs(tweet_rules::NSFW_MEDIA_INTERSTITIALS));
+    rules.extend(rule_specs(tweet_rules::NSFW_AUTHOR_INTERSTITIAL));
+    rules
 }
 
-fn timeline_home_policy(gating_countries: &Arc<NsfwGatingCountries>) -> Vec<Box<dyn Rule>> {
-    base_home_rules(gating_countries)
+fn timeline_home_policy() -> Vec<Box<dyn Rule>> {
+    base_home_rules()
 }
 
-fn timeline_home_recommendations_policy(
-    gating_countries: &Arc<NsfwGatingCountries>,
-) -> Vec<Box<dyn Rule>> {
-    let mut rules = base_home_rules(gating_countries);
-    let oon_drops: Vec<Box<dyn Rule>> = vec![
-        Box::new(DropTweetsWithDmcaMediaRule),
-        Box::new(DropTweetsWithGeoRestrictedMediaRule),
-        Box::new(author::NSFW_USER_AUTHOR_DROP),
-        Box::new(author::NSFW_ADMIN_AUTHOR_DROP),
-        Box::new(tweet_flag::TWEET_NSFW_USER_DROP),
-        Box::new(tweet_flag::TWEET_NSFW_ADMIN_DROP),
-        Box::new(tweet_label::NSFW_HIGH_RECALL_DROP),
-        Box::new(tweet_label::NSFW_HIGH_PRECISION_DROP),
-        Box::new(tweet_label::GORE_AND_VIOLENCE_HIGH_PRECISION_DROP),
-        Box::new(tweet_label::NSFW_CARD_IMAGE_DROP),
-        Box::new(tweet_label::DO_NOT_AMPLIFY_DROP),
-        Box::new(tweet_label::MALICIOUS_URL_DROP),
-        Box::new(tweet_label::SPAM_HIGH_RECALL_DROP),
-        Box::new(tweet_label::NSFW_TEXT_DROP),
-        Box::new(tweet_label::FOSNR_ABUSE_INSULTS_OON_DROP),
-        Box::new(user_label::NSFW_HIGH_RECALL_USER_DROP),
-        Box::new(user_label::NSFW_HIGH_PRECISION_USER_DROP),
-        Box::new(user_label::SPAM_HIGH_RECALL_USER_DROP),
-        Box::new(user_label::COMPROMISED_USER_DROP),
-        Box::new(user_label::READ_ONLY_USER_DROP),
-        Box::new(user_label::IMPERSONATION_HIGH_PRECISION_USER_DROP),
-        Box::new(user_label::NSFW_AVATAR_IMAGE_USER_DROP),
-        Box::new(user_label::NSFW_BANNER_IMAGE_USER_DROP),
-        Box::new(user_label::ABUSIVE_HIGH_RECALL_USER_DROP),
-        Box::new(user_label::NSFW_NEAR_PERFECT_USER_DROP),
-        Box::new(user_label::DO_NOT_AMPLIFY_NON_FOLLOWER_USER_DROP),
-    ];
-    rules.extend(oon_drops);
+fn timeline_home_recommendations_policy() -> Vec<Box<dyn Rule>> {
+    let mut rules = base_home_rules();
+    rules.extend(rule_specs(tweet_rules::RECS_MEDIA_DROPS));
+    rules.extend(rule_specs(author_rules::OON_NSFW_AUTHOR_DROPS));
+    rules.extend(rule_specs(tweet_rules::OON_TWEET_FLAG_DROPS));
+    rules.extend(rule_specs(tweet_rules::OON_TWEET_LABEL_DROPS));
+    rules.extend(rule_specs(author_rules::OON_USER_LABEL_DROPS));
     rules
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{HydratedTweetCandidate, MediaFeature, TweetFeatures, ViewerFeatures};
+    use crate::models::{
+        HydratedTweetCandidate, MediaFeature, TweetFeatures, VfAction, ViewerFeatures,
+    };
     use crate::rules::fixtures::{author_viewer, candidate, viewer, VIEWER_ID};
+    use xai_visibility_filtering::models::FilteredReason;
 
     struct RecommendationsOnlyRule;
 
@@ -213,6 +146,7 @@ mod tests {
             filter_all: vec![Box::new(RecommendationsOnlyRule)],
             timeline_home: vec![Box::new(RecommendationsOnlyRule)],
             timeline_home_recommendations: vec![Box::new(RecommendationsOnlyRule)],
+            nsfw_gating_countries: Arc::new(NsfwGatingCountries::new()),
         };
         let viewer = ViewerFeatures::default();
         let candidate = HydratedTweetCandidate::default();
@@ -277,10 +211,87 @@ rust_vf:
     fn filter_all_rule_drops_even_self_view() {
         let candidate = candidate().build();
         let viewer = author_viewer();
+        let spec = &tweet_rules::FILTER_ALL[0];
         assert!(matches!(
-            FilterAllRule.evaluate(&crate::rules::test_context(&viewer, &candidate)),
+            spec.evaluate(&crate::rules::test_context(&viewer, &candidate)),
             VfAction::Drop(_)
         ));
+    }
+
+    #[test]
+    fn wired_rule_order_matches_pre_migration_sequence() {
+        let policies = Policies::new();
+        assert_eq!(
+            policies.wired_rule_names(SafetyLevel::FilterAll),
+            vec!["FilterAllRule"]
+        );
+        let home = policies.wired_rule_names(SafetyLevel::TimelineHome);
+        assert_eq!(
+            home,
+            vec![
+                "SuspendedAuthorRule",
+                "DeactivatedAuthorRule",
+                "ErasedAuthorRule",
+                "OffboardedAuthorRule",
+                "ProtectedAuthorDropRule",
+                "ViewerBlocksAuthorRule",
+                "ViewerMutesAuthorRule",
+                "MutedRetweetsRule",
+                "PdnaTweetLabelRule",
+                "BounceTweetLabelRule",
+                "SpamTweetLabelRule",
+                "ForEmergencyUseOnlyDropRule",
+                "FosnrHatefulConductDropRule",
+                "FosnrViolentSpeechDropRule",
+                "FosnrAbuseDropRule",
+                "FosnrCivicIntegrityDropRule",
+                "NullcastedTweetDropRule",
+                "DropStaleTweetsRule",
+                "DropLegalTakendownPostRule",
+                "DropLocalLawsTakendownPostRule",
+                "SensitiveViewerLoggedOutDropRule",
+                "SensitiveViewerUnderageDropRule",
+                "SensitiveViewerNoStatedAgeDropRule",
+                "DropExclusiveTweetContentRule",
+                "NsfwHighPrecisionInterstitialRule",
+                "GoreAndViolenceInterstitialRule",
+                "NsfwCardImageInterstitialRule",
+                "NsfwAuthorInterstitialRule",
+            ]
+        );
+        let mut recs = home.clone();
+        recs.extend([
+            "DropTweetsWithDmcaMediaRule",
+            "DropTweetsWithGeoRestrictedMediaRule",
+            "DropNsfwUserAuthorRule",
+            "DropNsfwAdminAuthorRule",
+            "TweetNsfwUserDropRule",
+            "TweetNsfwAdminDropRule",
+            "NsfwHighRecallDropRule",
+            "NsfwHighPrecisionOonDropRule",
+            "GoreAndViolenceOonDropRule",
+            "NsfwCardImageOonDropRule",
+            "DoNotAmplifyOonDropRule",
+            "MaliciousUrlOonDropRule",
+            "SpamHighRecallDropRule",
+            "NsfwTextTweetLabelDropRule",
+            "FosnrAbuseInsultsOonDropRule",
+            "NsfwHighRecallUserLabelRule",
+            "NsfwHighPrecisionUserLabelRule",
+            "SpamHighRecallUserLabelRule",
+            "CompromisedUserLabelRule",
+            "ReadOnlyUserLabelRule",
+            "ImpersonationHighPrecisionUserLabelRule",
+            "NsfwAvatarImageRule",
+            "NsfwBannerImageRule",
+            "AbusiveHighRecallRule",
+            "NsfwNearPerfectAuthorRule",
+            "DoNotAmplifyNonFollowerRule",
+        ]);
+        assert_eq!(
+            policies.wired_rule_names(SafetyLevel::TimelineHomeRecommendations),
+            recs
+        );
     }
 
     #[test]

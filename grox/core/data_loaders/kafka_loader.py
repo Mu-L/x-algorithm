@@ -1,4 +1,3 @@
-import os
 import struct
 import uuid
 import asyncio
@@ -53,26 +52,11 @@ class KafkaLoader(MessageQueueLoader):
             self.consumer = MultiRegionKafkaConsumer(self.consumer_config)
         else:
             self.consumer_config = grox_config.get_kafka_consumer_topic(topic_name)
-            self._maybe_inject_scram_password(self.consumer_config)
             self.consumer = KafkaConsumer(self.consumer_config)
         self.queue: asyncio.Queue[MessageQueuePayload] = asyncio.Queue()
         self._prefetcher_task: asyncio.Task | None = None
         self._max_qps_per_partition = self.loader_config.max_qps_per_partition
         self._limit_item: RateLimitItemPerSecond | None = None
-
-    @staticmethod
-    def _maybe_inject_scram_password(consumer_config) -> None:
-        ssl_conf = consumer_config.ssl
-        if ssl_conf is None or not ssl_conf.sasl_mechanism.startswith("SCRAM"):
-            return
-        if ssl_conf.sasl_plain_password:
-            return
-        password = os.environ.get("KAFKA_RECSYS_PASSWORD")
-        if not password:
-            raise RuntimeError(
-                "KAFKA_RECSYS_PASSWORD env var is required for SCRAM auth but is not set."
-            )
-        ssl_conf.sasl_plain_password = password
 
     def _is_shutdown(self) -> bool:
         try:

@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-08-31T16:17:17Z
+// mirrored from config feature-switch defaults; last sync 2026-09-01T16:42:25Z
 use xai_feature_switches::param;
 
 param!(
@@ -909,7 +909,7 @@ param!(
     AdsBlenderType,
     String,
     "rust_home_mixer_ads_blender",
-    "partition_organic_low_risk"
+    "multi_risk"
 );
 
 param!(

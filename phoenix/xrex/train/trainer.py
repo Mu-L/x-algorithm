@@ -1166,12 +1166,21 @@ class Trainer(Config):
             keep_fields.add("emb_table_state")
         return (lambda tree: tree.purge_opt_state()), keep_fields
 
+    def _uses_tensorstore_save(self) -> bool:
+        return self.checkpoint_config.encrypt or self.checkpoint_config.save_method == "tensorstore"
+
     def maybe_load_checkpoint(
         self, ctx: TrainerContext, tag: str | None = None
     ) -> tuple[bool, int, int]:
         if not self.checkpoint_config.from_checkpoint or not ctx.checkpoint:
             rank_logger.info("Not loading checkpoint; starting from scratch")
             return False, 0, 0
+
+        _src = Path(ctx.checkpoint.path)
+        self._restored_encrypted = any(
+            (p / "_DEK").exists() or checkpointing_load._is_encrypted_tree(p)
+            for p in (_src, _src / "orbax-ckpt")
+        )
 
         do_not_load_opt_state = (
             self.checkpoint_config.no_opt_state or self.reinit_on_load
@@ -1180,7 +1189,7 @@ class Trainer(Config):
         use_streamed_restore = (
             self.checkpoint_config.restore_streamed
             and ctx.checkpoint.format == "orbax"
-            and self.checkpoint_config.save_method != "tensorstore"
+            and not self._uses_tensorstore_save()
         )
         if self.checkpoint_config.restore_streamed and not use_streamed_restore:
             rank_logger.info(

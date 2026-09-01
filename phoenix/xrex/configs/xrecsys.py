@@ -628,6 +628,8 @@ for config in configs:
             sid_codebook_size=mparams.get("sid_codebook_size", 1024),
             sid_hash_level=mparams.get("sid_hash_level", False),
             sid_cross_attn=mparams.get("sid_cross_attn", False),
+            sid_embedding_mode=mparams.get("sid_embedding_mode", "learned"),
+            sid_decoder_path=mparams.get("sid_decoder_path", ""),
             use_seqpack=mparams["use_seqpack"],
             right_anchored_rope=mparams.get("right_anchored_rope", False),
             user_features=user_features,

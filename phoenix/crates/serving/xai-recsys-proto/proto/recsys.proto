@@ -453,6 +453,7 @@ enum ActionName {
   ADS_SEARCH_CONVERSION_DELAYED = 211;
   ADS_SIGN_UP_CONVERSION_DELAYED = 212;
   ADS_CHECKOUT_INITIATED_CONVERSION_DELAYED = 213;
+  reserved 214 to 252;
   P_OPEN_LINK_P90 = 253;
   ADS_MMP_CLICK = 254;
   PLACE_HOLDER_255 = 255;
@@ -1359,6 +1360,7 @@ message DpaProductInfo {
   int32 gpc_l1_id = 5;
   int32 gpc_l2_id = 6;
   int32 gpc_l3_id = 7;
+  repeated int32 sid_codes = 8;
 }
 
 message AdInfo {

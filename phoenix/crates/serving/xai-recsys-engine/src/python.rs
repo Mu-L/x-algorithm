@@ -2046,8 +2046,16 @@ impl PrepareBatch<PredictRequestBatch> for RankingBatchPrep {
                     .zip(request.items.par_iter())
                     .for_each(|(search_query_emb_row, item)| {
                         if let Some(ref input_buffer) = item.input_buffer {
-                            search_query_emb_row
-                                .copy_from_slice(&input_buffer.candidate_search_query_embeddings);
+                            let src = &input_buffer.candidate_search_query_embeddings;
+                            if src.len() == search_query_embedding_dim {
+                                let n_rep = input_buffer
+                                    .num_real_candidates(num_item_hashes, candidate_seq_len);
+                                xai_recsys::util::repeat_query_into(
+                                    search_query_emb_row,
+                                    src,
+                                    n_rep,
+                                );
+                            }
                         }
                     });
             }

@@ -1,4 +1,5 @@
 use crate::models::{HydratedTweetCandidate, SafetyLabelType, ViewerFeatures};
+use crate::params::NsfwGatingCountries;
 use crate::rules::registry::SafetyLevel;
 use xai_core_entities::entities::TakedownReason;
 use xai_x_thrift::user_labels::LabelValue;
@@ -7,6 +8,7 @@ pub struct RuleContext<'a> {
     safety_level: SafetyLevel,
     viewer: &'a ViewerFeatures,
     candidate: &'a HydratedTweetCandidate,
+    nsfw_gating_countries: &'a NsfwGatingCountries,
 }
 
 impl<'a> RuleContext<'a> {
@@ -14,11 +16,13 @@ impl<'a> RuleContext<'a> {
         safety_level: SafetyLevel,
         viewer: &'a ViewerFeatures,
         candidate: &'a HydratedTweetCandidate,
+        nsfw_gating_countries: &'a NsfwGatingCountries,
     ) -> Self {
         Self {
             safety_level,
             viewer,
             candidate,
+            nsfw_gating_countries,
         }
     }
 
@@ -45,6 +49,11 @@ impl<'a> RuleContext<'a> {
     #[inline]
     pub fn takedown(&self) -> TakedownPredicates<'_> {
         TakedownPredicates { ctx: self }
+    }
+
+    #[inline]
+    pub fn nsfw_gating_country(&self, country_code: &str) -> bool {
+        self.nsfw_gating_countries.contains(country_code)
     }
 }
 

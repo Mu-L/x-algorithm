@@ -59,6 +59,7 @@ from xrex.models.recsys_feature_prep import (
     FeaturePrepConfig,
     build_feature_prep_inputs,
 )
+from xrex.models.recsys_sid import reconstruct_entity_sid
 from xrex.models.recsys_user_features import (
     UserFeaturesConfig,
     build_user_feature_parts,
@@ -542,6 +543,9 @@ class RecsysAggregatedModelConfig(Config):
     sid_hash_level: bool = False
     sid_cross_attn: bool = False
 
+    sid_embedding_mode: Literal["learned", "recon"] = "learned"
+    sid_decoder_path: str = ""
+
     use_user_embedding: bool = True
 
     use_ip_address: bool = False
@@ -614,6 +618,20 @@ class RecsysAggregatedModelConfig(Config):
                     "build feature_prep via _make_feature_prep_config or set them consistently."
                 )
 
+        if self.sid_embedding_mode == "recon":
+            assert not self.feature_prep_enabled, (
+                "sid_embedding_mode='recon' is only implemented on the legacy build_inputs "
+                "path; the feature_prep path embeds SIDs via its own learned tables "
+                "(FeaturePrepConfig.enable_post_sid) and would silently ignore recon."
+            )
+            assert not self.sid_hash_level and not self.sid_cross_attn, (
+                "sid_embedding_mode='recon' replaces the learned SID tables outright; "
+                "sid_hash_level / sid_cross_attn only apply to mode='learned'."
+            )
+            assert self.sid_decoder_path, (
+                "sid_embedding_mode='recon' requires sid_decoder_path "
+                "(codebook.safetensors with `stages` + `dec_*` tensors)."
+            )
         if self.use_seqpack:
             attn_config = self.model_config.attn_config
             assert self.right_anchored_rope
@@ -2642,6 +2660,16 @@ class RecsysAggregatedModel(hk.Module):
                     )
                 else:
                     sids_jax = cast_jax(sids_in)
+                if _config.sid_embedding_mode == "recon":
+                    return reconstruct_entity_sid(
+                        sids_jax,
+                        _config.emb_table_width,
+                        _config.sid_decoder_path,
+                        self.config.model_config.scale_config.emb_lr_multiplier,
+                        self.config.embed_init_scale,
+                        DTYPE_BY_NAME[_config.fprop_dtype],
+                        "post",
+                    )
                 needs_hashes = _config.sid_hash_level
                 return embed_entity_sid(
                     sids_jax,
@@ -2660,6 +2688,7 @@ class RecsysAggregatedModel(hk.Module):
 
             _sid_post_emb_h = _embed_post_sid("history_seq") if _config.use_post_sid else None
             _sid_post_emb_c = _embed_post_sid("candidate_seq") if _config.use_post_sid else None
+            _sid_recon = _config.use_post_sid and _config.sid_embedding_mode == "recon"
 
             history_embeddings, history_padding_mask = block_history_reduce(
                 history_post_hashes,
@@ -2672,9 +2701,11 @@ class RecsysAggregatedModel(hk.Module):
                 self.config.model_config.scale_config.emb_lr_multiplier,
                 self.config.embed_init_scale,
                 history_unified_context is not None,
-                sid_post_embeddings=_sid_post_emb_h,
+                sid_post_embeddings=None if _sid_recon else _sid_post_emb_h,
                 history_bridge_prob=history_bridge_prob,
             )
+            if _sid_recon and _sid_post_emb_h is not None:
+                history_embeddings += _sid_post_emb_h.astype(history_embeddings.dtype)
 
             if (
                 self.config.safety_filter_mode == "hard"
@@ -2704,8 +2735,10 @@ class RecsysAggregatedModel(hk.Module):
                 candidate_search_query_embeddings=candidate_search_query_embeddings,
                 search_query_embedding_dim=self.config.search_query_embedding_dim,
                 fprop_dtype=DTYPE_BY_NAME[self.config.fprop_dtype],
-                sid_post_embeddings=_sid_post_emb_c,
+                sid_post_embeddings=None if _sid_recon else _sid_post_emb_c,
             )
+            if _sid_recon and _sid_post_emb_c is not None:
+                candidate_embeddings += _sid_post_emb_c.astype(candidate_embeddings.dtype)
             candidate_embeddings = self._maybe_add_dpa_input_embedding(
                 candidate_embeddings, recsys_features_batch
             )

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 X.AI Corp.
 import datetime
+from dataclasses import field
 from typing import Literal, NamedTuple, Protocol
 
 import haiku as hk
@@ -52,6 +53,10 @@ class CheckpointConfig(Config):
     checkpoint_chunked: bool = True
     checkpoint_compressed: bool = True
     checkpoint_chunk_size_bytes: int = 1024 * 1024 * 4
+    encrypt: bool = False
+    encryption_key_id: str | None = None
+    encryption_context: dict[str, str] = field(default_factory=dict)
+    encryption_chunk_size_bytes: int = 8 * 1024 * 1024
 
     save_concurrent_gb: int | None = None
 

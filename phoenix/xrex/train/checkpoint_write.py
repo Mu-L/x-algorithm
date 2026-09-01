@@ -66,6 +66,12 @@ def save_checkpoint(
 
     path = self.get_checkpoint_path(self.ctx)
 
+    if getattr(self, "_restored_encrypted", False):
+        raise ValueError(
+            "restored from an ENCRYPTED checkpoint but the orbax writer cannot "
+            "produce encrypted saves — refusing to downgrade to plaintext saves"
+        )
+
     with tracer.start_as_current_span("write_checksum"):
         if self.checkpoint_config.write_checksums:
             if checksum_dict is None:
