@@ -1167,7 +1167,7 @@ class Trainer(Config):
         return (lambda tree: tree.purge_opt_state()), keep_fields
 
     def _uses_tensorstore_save(self) -> bool:
-        return self.checkpoint_config.encrypt or self.checkpoint_config.save_method == "tensorstore"
+        return self.checkpoint_config.save_method == "tensorstore"
 
     def maybe_load_checkpoint(
         self, ctx: TrainerContext, tag: str | None = None

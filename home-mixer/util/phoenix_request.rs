@@ -132,6 +132,7 @@ pub fn build_request_without_sequence_and_candidates(
         candidate_sets: vec![candidate_set],
         return_logprob: true,
         top_logprobs_num: TOP_LOG_PROBS_NUM,
+        return_backbone_scores: query.return_backbone_scores,
         client_context: build_client_context(query),
         user_context: build_user_context(query),
         metadata: query.request_id.to_string(),

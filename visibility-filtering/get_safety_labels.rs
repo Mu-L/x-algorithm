@@ -87,7 +87,7 @@ pub(crate) struct GetSafetyLabelsOutcome {
 
 impl GetSafetyLabelsOutcome {
     pub(crate) fn try_from_resolved(
-        resolved: HashMap<u64, Result<vf_pb::SafetyLabelMap, LookupError>>,
+        resolved: HashMap<u64, Result<Arc<vf_pb::SafetyLabelMap>, LookupError>>,
         requested_count: usize,
     ) -> Result<Self, Status> {
         let mut results = HashMap::with_capacity(resolved.len());
@@ -97,7 +97,7 @@ impl GetSafetyLabelsOutcome {
         for (id, lookup_result) in resolved {
             match lookup_result {
                 Ok(label_map) => {
-                    results.insert(id, label_map);
+                    results.insert(id, Arc::unwrap_or_clone(label_map));
                 }
                 Err(e) => {
                     failed_ids.push(id);
@@ -182,8 +182,8 @@ mod tests {
     fn try_from_resolved_reports_all_success() {
         let outcome = GetSafetyLabelsOutcome::try_from_resolved(
             HashMap::from([
-                (1, Ok(labels_with_entry(11))),
-                (2, Ok(labels_with_entry(22))),
+                (1, Ok(Arc::new(labels_with_entry(11)))),
+                (2, Ok(Arc::new(labels_with_entry(22)))),
             ]),
             2,
         )
@@ -203,7 +203,7 @@ mod tests {
     fn try_from_resolved_reports_partial_failure() {
         let outcome = GetSafetyLabelsOutcome::try_from_resolved(
             HashMap::from([
-                (1, Ok(labels_with_entry(11))),
+                (1, Ok(Arc::new(labels_with_entry(11)))),
                 (
                     2,
                     Err(LookupError::new(FailureKind::ManhattanDecode, "decode")),
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn try_from_resolved_rejects_missing_ids() {
         let status = GetSafetyLabelsOutcome::try_from_resolved(
-            HashMap::from([(7, Ok(labels_with_entry(22)))]),
+            HashMap::from([(7, Ok(Arc::new(labels_with_entry(22))))]),
             2,
         )
         .unwrap_err();

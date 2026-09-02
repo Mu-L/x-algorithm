@@ -107,6 +107,7 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
             .iter()
             .map(|c| PostCandidate {
                 phoenix_scores: predictions.candidate_scores(&c.get_original_tweet_id()),
+                backbone_scores: predictions.candidate_backbone_scores(&c.get_original_tweet_id()),
                 served_slate_context: predictions
                     .candidate_slate_context(&c.get_original_tweet_id())
                     .map(Into::into),
@@ -121,6 +122,7 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
 
     fn update(&self, candidate: &mut PostCandidate, scored: PostCandidate) {
         candidate.phoenix_scores = scored.phoenix_scores;
+        candidate.backbone_scores = scored.backbone_scores;
         candidate.served_slate_context = scored.served_slate_context;
         candidate.prediction_request_id = scored.prediction_request_id;
         candidate.last_scored_at_ms = scored.last_scored_at_ms;

@@ -373,7 +373,7 @@ class LegacyCard(BaseModel):
     def to_convo(self) -> list[str | ConvoImage]:
         body: list[str | ConvoImage] = []
         if self.title:
-            body.append(f"\n\nTitle: {self.title}")
+            body.append(f"\n\n[Card Title] {self.title}")
         if self.description:
             body.append(f"\n\nDescription: {self.description}")
         if self.domain:
@@ -445,7 +445,7 @@ class UnifiedCard(BaseModel):
     def to_convo(self) -> list[str | ConvoImage | ConvoVideo]:
         res: list[str | ConvoImage | ConvoVideo] = ["\n\n[Card] ", " "]
         if self.title:
-            res.append(f"\n\nTitle: {self.title}")
+            res.append(f"\n\n[Card Title] {self.title}")
         if self.description:
             res.append(f"\n\nDescription: {self.description}")
         if self.url:

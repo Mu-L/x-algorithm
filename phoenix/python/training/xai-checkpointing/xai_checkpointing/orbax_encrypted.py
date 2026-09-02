@@ -29,6 +29,14 @@ def encrypt_write(base, directory, name: str, data: bytes) -> None:
     kv.write(name, data).result()
 
 
+def decrypt_read(base, directory, name: str) -> bytes:
+    kv = ts.KvStore.open(at_dir(base, pathlib.Path(str(directory)))).result()
+    result = kv.read(name).result()
+    if result.state == "missing":
+        raise FileNotFoundError(f"{name} does not exist at {directory}")
+    return result.value
+
+
 def _require_array_leaves(state) -> None:
     bad = [
         f"{jax.tree_util.keystr(key_path)}: {type(leaf).__name__}"
@@ -79,6 +87,11 @@ class EncryptedPyTreeCheckpointHandler(BasePyTreeCheckpointHandler):
             return 0
 
         return self._thread_pool.submit(_save_fn)
+
+    def _read_metadata_file(self, directory):
+        return ocp._src.metadata.tree.InternalTreeMetadata.from_json(
+            json.loads(decrypt_read(self._base_for(directory), directory, "_METADATA"))
+        )
 
     def finalize(self, directory):
         path = pathlib.Path(str(directory))
@@ -135,7 +148,7 @@ class EncryptedCheckpointMetadataStore:
         return None
 
 
-def _encrypted_array_handler(array_handler_cls, base_for, handler_kwargs):
+def _encrypted_array_handler(array_handler_cls, base_for, array_handler_args=()):
     class EncryptedArrayHandler(array_handler_cls):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -143,6 +156,13 @@ def _encrypted_array_handler(array_handler_cls, base_for, handler_kwargs):
 
         def _get_json_tspec_write(self, info, *args, **kwargs):
             spec = super()._get_json_tspec_write(info, *args, **kwargs)
+            spec["kvstore"] = use_encrypted_kvstore(
+                spec["kvstore"], self._base_for(info.parent_dir)
+            )
+            return spec
+
+        def _get_json_tspec_read(self, info, *args, **kwargs):
+            spec = super()._get_json_tspec_read(info, *args, **kwargs)
             spec["kvstore"] = use_encrypted_kvstore(
                 spec["kvstore"], self._base_for(info.parent_dir)
             )
@@ -165,21 +185,24 @@ def _encrypted_array_handler(array_handler_cls, base_for, handler_kwargs):
                 if serialized_sharding is not None:
                     await t.with_transaction(sharding_metadata_txn).write(serialized_sharding)
 
-    gb = handler_kwargs.get("save_concurrent_gb")
-    if gb is not None:
-        return EncryptedArrayHandler(int(gb) * 10**9)
-    return EncryptedArrayHandler()
+    return EncryptedArrayHandler(*array_handler_args)
 
 
 def encrypted_checkpointer(
-    kms_client, encryption_chunk_size: int, timeout_secs: int, array_handler_cls, handler_kwargs
+    kms_client,
+    encryption_chunk_size: int,
+    timeout_secs: int,
+    array_handler_cls,
+    array_handler_args=(),
+    *,
+    checkpoint_handler_kwargs,
 ):
     impl_ref: list[EncryptedPyTreeCheckpointHandler] = []
 
     def base_for(directory) -> dict:
         return impl_ref[0]._base_for(directory)
 
-    array_handler = _encrypted_array_handler(array_handler_cls, base_for, handler_kwargs)
+    array_handler = _encrypted_array_handler(array_handler_cls, base_for, array_handler_args)
     registry = _ArraysOnlyRegistry(
         ocp.type_handlers.create_type_handler_registry((jax.Array, array_handler))
     )
@@ -187,17 +210,19 @@ def encrypted_checkpointer(
         kms_client,
         encryption_chunk_size,
         use_ocdbt=True,
-        use_zarr3=handler_kwargs.get("use_zarr3", False),
-        save_concurrent_bytes=_pytree._concurrent_bytes(handler_kwargs.get("save_concurrent_gb")),
+        use_zarr3=checkpoint_handler_kwargs.get("use_zarr3", False),
+        save_concurrent_bytes=_pytree._concurrent_bytes(
+            checkpoint_handler_kwargs.get("save_concurrent_gb")
+        ),
         restore_concurrent_bytes=_pytree._concurrent_bytes(
-            handler_kwargs.get("restore_concurrent_gb")
+            checkpoint_handler_kwargs.get("restore_concurrent_gb")
         ),
         type_handler_registry=registry,
     )
     impl_ref.append(impl)
     return ocp.AsyncCheckpointer(
         ocp.PyTreeCheckpointHandler(
-            handler_impl=impl, type_handler_registry=registry, **handler_kwargs
+            handler_impl=impl, type_handler_registry=registry, **checkpoint_handler_kwargs
         ),
         timeout_secs,
         checkpoint_metadata_store=EncryptedCheckpointMetadataStore(impl._base_for),
@@ -226,6 +251,8 @@ class _ArraysOnlyRegistry:
 _ENCRYPTED_CHECKPOINTER = None
 _ENCRYPTED_SAVE_CONCURRENT_GB: int | None = None
 _ENCRYPTED_TIMEOUT_SECS: int | None = None
+_ENCRYPTED_CHUNK_SIZE: int | None = None
+_ENCRYPTED_ARRAY_HANDLER_CLS = None
 
 
 def wait_until_finished() -> None:
@@ -240,16 +267,31 @@ def get_encrypted_checkpointer(
     save_concurrent_gb: int | None,
     array_handler_cls,
 ):
-    global _ENCRYPTED_CHECKPOINTER, _ENCRYPTED_SAVE_CONCURRENT_GB, _ENCRYPTED_TIMEOUT_SECS
+    global \
+        _ENCRYPTED_CHECKPOINTER, \
+        _ENCRYPTED_SAVE_CONCURRENT_GB, \
+        _ENCRYPTED_TIMEOUT_SECS, \
+        _ENCRYPTED_CHUNK_SIZE, \
+        _ENCRYPTED_ARRAY_HANDLER_CLS
     if _ENCRYPTED_CHECKPOINTER is None:
-        handler_kwargs: dict = {"use_zarr3": True}
+        checkpoint_handler_kwargs: dict = {"use_zarr3": True}
         if save_concurrent_gb is not None:
-            handler_kwargs["save_concurrent_gb"] = save_concurrent_gb
-            handler_kwargs["restore_concurrent_gb"] = save_concurrent_gb
+            checkpoint_handler_kwargs["save_concurrent_gb"] = save_concurrent_gb
+            checkpoint_handler_kwargs["restore_concurrent_gb"] = save_concurrent_gb
         _ENCRYPTED_SAVE_CONCURRENT_GB = save_concurrent_gb
         _ENCRYPTED_TIMEOUT_SECS = timeout_secs
+        array_handler_args = (
+            (int(save_concurrent_gb) * 10**9,) if save_concurrent_gb is not None else ()
+        )
+        _ENCRYPTED_CHUNK_SIZE = encryption_chunk_size
+        _ENCRYPTED_ARRAY_HANDLER_CLS = array_handler_cls
         _ENCRYPTED_CHECKPOINTER = encrypted_checkpointer(
-            kms_client, encryption_chunk_size, timeout_secs, array_handler_cls, handler_kwargs
+            kms_client,
+            encryption_chunk_size,
+            timeout_secs,
+            array_handler_cls,
+            array_handler_args,
+            checkpoint_handler_kwargs=checkpoint_handler_kwargs,
         )
     else:
         _ENCRYPTED_CHECKPOINTER._handler._handler_impl.set_kms_client(kms_client)
@@ -266,6 +308,23 @@ def get_encrypted_checkpointer(
                 "created with timeout_secs=%s.",
                 timeout_secs,
                 _ENCRYPTED_TIMEOUT_SECS,
+            )
+        if _ENCRYPTED_CHUNK_SIZE is not None and encryption_chunk_size != _ENCRYPTED_CHUNK_SIZE:
+            rank_logger.warning(
+                "get_encrypted_checkpointer(encryption_chunk_size=%s) ignored; checkpointer already "
+                "created with encryption_chunk_size=%s.",
+                encryption_chunk_size,
+                _ENCRYPTED_CHUNK_SIZE,
+            )
+        if (
+            _ENCRYPTED_ARRAY_HANDLER_CLS is not None
+            and array_handler_cls is not _ENCRYPTED_ARRAY_HANDLER_CLS
+        ):
+            rank_logger.warning(
+                "get_encrypted_checkpointer(array_handler_cls=%s) ignored; checkpointer already "
+                "created with array_handler_cls=%s.",
+                array_handler_cls,
+                _ENCRYPTED_ARRAY_HANDLER_CLS,
             )
     return _ENCRYPTED_CHECKPOINTER
 

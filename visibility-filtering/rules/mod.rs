@@ -13,12 +13,7 @@ use crate::models::VfAction;
 use xai_visibility_filtering::models::FilteredReason;
 
 pub use context::RuleContext;
-pub use registry::{Policies, SafetyLevel};
-
-pub trait Rule: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn evaluate(&self, context: &RuleContext<'_>) -> VfAction;
-}
+pub use registry::{RuleEngine, SafetyLevel};
 
 #[derive(Clone, Debug)]
 pub struct Verdict {
@@ -32,32 +27,6 @@ impl Verdict {
             action: VfAction::Drop(FilteredReason::UnspecifiedReason),
             decided_by: Some("unresolved_author_id"),
         }
-    }
-}
-
-fn evaluate_rules(rules: &[Box<dyn Rule>], context: &RuleContext<'_>) -> Verdict {
-    let mut worst = VfAction::Allow;
-    let mut decided_by = None;
-    for rule in rules {
-        match rule.evaluate(context) {
-            VfAction::Drop(reason) => {
-                return Verdict {
-                    action: VfAction::Drop(reason),
-                    decided_by: Some(rule.name()),
-                };
-            }
-            VfAction::Interstitial(reason) => {
-                if matches!(worst, VfAction::Allow) {
-                    worst = VfAction::Interstitial(reason);
-                    decided_by = Some(rule.name());
-                }
-            }
-            VfAction::Allow => {}
-        }
-    }
-    Verdict {
-        action: worst,
-        decided_by,
     }
 }
 
@@ -76,131 +45,4 @@ pub(crate) fn test_context<'a>(
         candidate,
         &NSFW_GATING_COUNTRIES,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::{HydratedTweetCandidate, ViewerFeatures};
-    use std::sync::{Arc, Mutex};
-
-    struct FakeRule {
-        name: &'static str,
-        action: VfAction,
-        calls: Arc<Mutex<Vec<&'static str>>>,
-    }
-
-    impl Rule for FakeRule {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        fn evaluate(&self, _context: &RuleContext<'_>) -> VfAction {
-            self.calls.lock().unwrap().push(self.name);
-            self.action.clone()
-        }
-    }
-
-    type CallLog = Arc<Mutex<Vec<&'static str>>>;
-
-    fn recording_rules(specs: &[(&'static str, VfAction)]) -> (Vec<Box<dyn Rule>>, CallLog) {
-        let calls = CallLog::default();
-        let rules = specs
-            .iter()
-            .map(|(name, action)| {
-                Box::new(FakeRule {
-                    name,
-                    action: action.clone(),
-                    calls: calls.clone(),
-                }) as Box<dyn Rule>
-            })
-            .collect();
-        (rules, calls)
-    }
-
-    fn context_inputs() -> (ViewerFeatures, HydratedTweetCandidate) {
-        (ViewerFeatures::default(), HydratedTweetCandidate::default())
-    }
-
-    #[test]
-    fn drop_short_circuits_later_rules() {
-        let (rules, calls) = recording_rules(&[
-            ("allow", VfAction::Allow),
-            ("drop", VfAction::Drop(FilteredReason::AuthorIsSuspended)),
-            ("after_drop", VfAction::Allow),
-        ]);
-        let (viewer, candidate) = context_inputs();
-
-        let verdict = evaluate_rules(&rules, &test_context(&viewer, &candidate));
-
-        assert!(matches!(
-            verdict.action,
-            VfAction::Drop(FilteredReason::AuthorIsSuspended)
-        ));
-        assert_eq!(verdict.decided_by, Some("drop"));
-        assert_eq!(*calls.lock().unwrap(), vec!["allow", "drop"]);
-    }
-
-    #[test]
-    fn first_interstitial_decided_by_sticks_without_short_circuit() {
-        let (rules, calls) = recording_rules(&[
-            (
-                "first_interstitial",
-                VfAction::Interstitial(FilteredReason::ContainNsfwMedia),
-            ),
-            (
-                "second_interstitial",
-                VfAction::Interstitial(FilteredReason::UnspecifiedReason),
-            ),
-            ("after_interstitials", VfAction::Allow),
-        ]);
-        let (viewer, candidate) = context_inputs();
-
-        let verdict = evaluate_rules(&rules, &test_context(&viewer, &candidate));
-
-        assert!(matches!(
-            verdict.action,
-            VfAction::Interstitial(FilteredReason::ContainNsfwMedia)
-        ));
-        assert_eq!(verdict.decided_by, Some("first_interstitial"));
-        assert_eq!(
-            *calls.lock().unwrap(),
-            vec![
-                "first_interstitial",
-                "second_interstitial",
-                "after_interstitials"
-            ]
-        );
-    }
-
-    #[test]
-    fn drop_after_interstitial_wins() {
-        let (rules, _) = recording_rules(&[
-            (
-                "interstitial",
-                VfAction::Interstitial(FilteredReason::ContainNsfwMedia),
-            ),
-            ("drop", VfAction::Drop(FilteredReason::AuthorIsSuspended)),
-        ]);
-        let (viewer, candidate) = context_inputs();
-
-        let verdict = evaluate_rules(&rules, &test_context(&viewer, &candidate));
-
-        assert!(matches!(
-            verdict.action,
-            VfAction::Drop(FilteredReason::AuthorIsSuspended)
-        ));
-        assert_eq!(verdict.decided_by, Some("drop"));
-    }
-
-    #[test]
-    fn all_allows_is_allow_with_no_decider() {
-        let (rules, _) = recording_rules(&[("a", VfAction::Allow), ("b", VfAction::Allow)]);
-        let (viewer, candidate) = context_inputs();
-
-        let verdict = evaluate_rules(&rules, &test_context(&viewer, &candidate));
-
-        assert!(matches!(verdict.action, VfAction::Allow));
-        assert_eq!(verdict.decided_by, None);
-    }
 }

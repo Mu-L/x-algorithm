@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 X.AI Corp.
 import base64
+import logging
 import pathlib
 
 from xai_checkpointing.dek import publish_tree_dek
+
+rank_logger = logging.getLogger("rank")
 
 
 def at_dir(kvstore: dict, path: pathlib.Path | str) -> dict:
@@ -43,7 +46,12 @@ def _envelope_spec(
 
 def encrypted_kvstore(path: pathlib.Path, kms_client, encryption_chunk_size: int) -> dict:
     path.mkdir(parents=True, exist_ok=True)
-    raw, wrapped, context = publish_tree_dek(path, kms_client)
+    raw, wrapped, context, entry = publish_tree_dek(path, kms_client)
+    rank_logger.info(
+        "KMS unwrap OK for %s (key_id=%s)",
+        path,
+        entry.get("key_id"),
+    )
     return _envelope_spec(
         path, base64.b64encode(raw).decode(), wrapped, encryption_chunk_size, context
     )

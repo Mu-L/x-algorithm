@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 X.AI Corp.
+import base64
 import contextlib
 import ctypes
 import fcntl
@@ -23,6 +24,8 @@ from xai_checkpointing import (
     common,
     fix_jax,
 )
+from xai_checkpointing.dek import adopt_tree_dek
+from xai_checkpointing.encrypted_kvstore import at_dir, use_encrypted_kvstore
 from xai_checkpointing.tree_util import has_subtree, tree_to_dict
 
 import orbax.checkpoint as ocp
@@ -52,35 +55,49 @@ def _names_from_tree_metadata(metadata_json: dict[str, Any]) -> list[str]:
     ]
 
 
+def _read_encrypted_file(
+    path: pathlib.Path, key: str, kvstore_base: dict[str, Any], ts_context: ts.Context
+) -> bytes:
+    kv = ts.KvStore.open(at_dir(kvstore_base, path), context=ts_context).result()
+    return kv.read(key).result().value
+
+
+def _encrypted_tspec_transform(kvstore_base: dict[str, Any]) -> Callable:
+    def transform(tspec: dict[str, Any]) -> dict[str, Any]:
+        return {**tspec, "kvstore": use_encrypted_kvstore(tspec["kvstore"], kvstore_base)}
+
+    return transform
+
+
 def _prepare_checkpoint_read(
     path: pathlib.Path, kms_client: object | None
-) -> tuple[bool, object | None, dict[str, Any], list[str], ts.Context]:
-    encrypted = _is_encrypted_tree(path)
-    if encrypted:
-        import xai_kms
-
-        os.environ.setdefault("TENSORSTORE_HTTP_THREADS", "64")
-        if kms_client is None:
-            kms_client = xai_kms.KmsClient.from_cluster_env()
-        metadata_json = json.loads(
-            xai_kms.nfs.open_envelope(kms_client, str(path / "_METADATA")).read()
-        )
-        checkpoint_names = _names_from_tree_metadata(metadata_json)
-    else:
+) -> tuple[dict[str, Any] | None, dict[str, Any], list[str], ts.Context]:
+    ts_context = ts.Context(
+        {
+            "file_io_concurrency": {"limit": 128},
+            "cache_pool#ocdbt": {"total_bytes_limit": 100000000},
+        }
+    )
+    if not _is_encrypted_tree(path):
         with (path / "_METADATA").open() as f:
             metadata_json = json.load(f)
         checkpoint_names = list(
             tree_to_dict(ocp.StandardCheckpointer().metadata(path), keep_none=False).keys()
         )
+        return None, metadata_json, checkpoint_names, ts_context
 
-    context_spec = {
-        "file_io_concurrency": {"limit": 128},
-        "cache_pool#ocdbt": {"total_bytes_limit": 100000000},
+    import xai_kms
+
+    if kms_client is None:
+        kms_client = xai_kms.KmsClient.from_cluster_env()
+    raw = adopt_tree_dek(path, kms_client)
+    kvstore_base = {
+        "driver": "xai_encrypted",
+        "base": {"driver": "file", "path": path.as_posix() + "/"},
+        "dek_b64": base64.b64encode(raw).decode(),
     }
-    if encrypted:
-        context_spec["http_request_concurrency"] = {"limit": 128}
-
-    return encrypted, kms_client, metadata_json, checkpoint_names, ts.Context(context_spec)
+    metadata_json = json.loads(_read_encrypted_file(path, "_METADATA", kvstore_base, ts_context))
+    return kvstore_base, metadata_json, _names_from_tree_metadata(metadata_json), ts_context
 
 
 def _restore_node_serialize_enabled() -> bool:
@@ -320,7 +337,7 @@ def load_checkpoint(
 
     path = pathlib.Path(path) / tag
 
-    encrypted, kms_client, metadata_json, checkpoint_names, ts_context = _prepare_checkpoint_read(
+    kvstore_base, metadata_json, checkpoint_names, ts_context = _prepare_checkpoint_read(
         path, kms_client
     )
     use_zarr3 = metadata_json["use_zarr3"]
@@ -377,10 +394,8 @@ def load_checkpoint(
         if node_lock is not None:
             stack.callback(node_lock.close)
         tspec_transform = None
-        if encrypted:
-            import xai_kms
-
-            tspec_transform = stack.enter_context(xai_kms.KvServe(kms_client, path)).rewrite_ocdbt
+        if kvstore_base is not None:
+            tspec_transform = _encrypted_tspec_transform(kvstore_base)
 
         for batch_index, batch in enumerate(batches, start=1):
             with node_lock if node_lock is not None else contextlib.nullcontext():
@@ -475,7 +490,7 @@ def load_checkpoint_streamed(
     start = time.time()
 
     path = pathlib.Path(path) / tag
-    encrypted, kms_client, metadata_json, checkpoint_names, ts_context = _prepare_checkpoint_read(
+    kvstore_base, metadata_json, checkpoint_names, ts_context = _prepare_checkpoint_read(
         path, kms_client
     )
     use_zarr3 = metadata_json["use_zarr3"]
@@ -537,10 +552,8 @@ def load_checkpoint_streamed(
         if node_lock is not None:
             stack.callback(node_lock.close)
         tspec_transform = None
-        if encrypted:
-            import xai_kms
-
-            tspec_transform = stack.enter_context(xai_kms.KvServe(kms_client, path)).rewrite_ocdbt
+        if kvstore_base is not None:
+            tspec_transform = _encrypted_tspec_transform(kvstore_base)
 
         for batch in batches:
             with node_lock if node_lock is not None else contextlib.nullcontext():

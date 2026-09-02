@@ -340,7 +340,7 @@ mod tests {
     use crate::rules::fixtures::{
         author_viewer, candidate, logged_out_viewer, sensitive_opt_in_viewer, viewer, VIEWER_ID,
     };
-    use crate::rules::{test_context, Rule, RuleContext};
+    use crate::rules::{test_context, RuleContext};
     use xai_core_entities::entities::{EditControl, EditControlInitial, TakedownReason};
 
     fn assert_drops(
@@ -1121,5 +1121,38 @@ mod tests {
             &FilteredReason::TweetIsNullcast,
         );
         assert_allows(&spec, &author_viewer(), &candidate().build());
+    }
+
+    fn all_rule_slices() -> [&'static [RuleSpec]; 15] {
+        use crate::rules::author_rules::{
+            AUTHOR_STATE_DROPS, OON_NSFW_AUTHOR_DROPS, OON_USER_LABEL_DROPS, SOCIALGRAPH_DROPS,
+        };
+        [
+            AUTHOR_STATE_DROPS,
+            TWEET_LABEL_DROPS,
+            NSFW_MEDIA_INTERSTITIALS,
+            OON_NSFW_AUTHOR_DROPS,
+            OON_TWEET_FLAG_DROPS,
+            OON_TWEET_LABEL_DROPS,
+            OON_USER_LABEL_DROPS,
+            SOCIALGRAPH_DROPS,
+            EXCLUSIVE_TWEET_DROP,
+            NSFW_AUTHOR_INTERSTITIAL,
+            NULLCAST_DROP,
+            TES_HOME_DROPS,
+            FILTER_ALL,
+            RECS_MEDIA_DROPS,
+            SENSITIVE_VIEWER_DROPS,
+        ]
+    }
+
+    #[test]
+    fn wired_rule_names_are_unique_and_nonempty() {
+        let mut seen = std::collections::BTreeSet::new();
+        for spec in all_rule_slices().into_iter().flatten() {
+            let name = spec.name();
+            assert!(!name.is_empty(), "rule name must be non-empty");
+            assert!(seen.insert(name), "duplicate wired rule name {name}");
+        }
     }
 }

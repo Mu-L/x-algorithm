@@ -329,9 +329,10 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
             .await?;
         let RequestContext {
             b3_info,
-            query,
+            mut query,
             root_span,
         } = ctx;
+        query.return_backbone_scores = true;
         let output = self.run_pipeline(query).instrument(root_span).await?;
 
         let debug_json = build_debug_json(&output.pipeline_result);
@@ -461,9 +462,10 @@ impl pb::for_you_feed_service_server::ForYouFeedService for ForYouFeedServer {
             .await?;
         let RequestContext {
             b3_info,
-            query,
+            mut query,
             root_span,
         } = ctx;
+        query.return_backbone_scores = true;
         let output = self.get_for_you_feed(query).instrument(root_span).await?;
 
         let mut response = Response::new(ForYouFeedResponse {
@@ -506,6 +508,7 @@ impl pb::for_you_feed_service_server::ForYouFeedService for ForYouFeedServer {
             root_span,
         } = ctx;
 
+        query.return_backbone_scores = true;
         query.request_context = request_context;
         query.is_polling = is_polling;
         if !cursor_str.is_empty() {
@@ -620,6 +623,7 @@ impl pb::ranked_following_feed_service_server::RankedFollowingFeedService
             mut query,
             root_span,
         } = ctx;
+        query.return_backbone_scores = true;
         query.in_network_only = true;
         let output = self
             .get_ranked_following_feed(query)
@@ -720,6 +724,7 @@ impl pb::following_feed_service_server::FollowingFeedService for FollowingFeedSe
             mut query,
             root_span,
         } = ctx;
+        query.return_backbone_scores = true;
         query.in_network_only = true;
         let output = self.get_following_feed(query).instrument(root_span).await?;
 

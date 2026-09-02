@@ -6,6 +6,7 @@ import fcntl
 import gc
 import logging
 import os
+import sys
 import time
 from typing import Any
 
@@ -74,6 +75,14 @@ def _release_batch_memory():
         pass
 
 
+class _AsyncCheckpointer(ocp.AsyncCheckpointer):
+    def wait_until_finished(self):
+        super().wait_until_finished()
+        _orbax_encrypted = sys.modules.get("xai_checkpointing.orbax_encrypted")
+        if _orbax_encrypted is not None:
+            _orbax_encrypted.wait_until_finished()
+
+
 def get_checkpointer(timeout_secs=900, save_concurrent_gb: int | None = None):
     global _CHECKPOINTER, _CHECKPOINTER_SAVE_CONCURRENT_GB
     if _CHECKPOINTER is None:
@@ -90,7 +99,7 @@ def get_checkpointer(timeout_secs=900, save_concurrent_gb: int | None = None):
             save_concurrent_gb,
             save_concurrent_gb,
         )
-        _CHECKPOINTER = ocp.AsyncCheckpointer(
+        _CHECKPOINTER = _AsyncCheckpointer(
             ocp.PyTreeCheckpointHandler(**handler_kwargs), timeout_secs
         )
         if not hasattr(_CHECKPOINTER, "_post_finalization_callback"):
@@ -222,6 +231,8 @@ def save_checkpoint(
     chunk_byte_size: int = 1024 * 1024 * 4,
     tracer: Tracer | None = None,
     save_concurrent_gb: int | None = None,
+    kms_client: object | None = None,
+    encryption_chunk_size: int = 8 * 1024 * 1024,
 ):
     if not tracer:
         tracer = MockTracer()
@@ -230,7 +241,24 @@ def save_checkpoint(
         tag = "orbax-ckpt"
     os.makedirs(path, exist_ok=True)
 
-    checkpointer = get_checkpointer(timeout_secs, save_concurrent_gb=save_concurrent_gb)
+    if kms_client is not None:
+        from xai_checkpointing import orbax_encrypted
+
+        rank_logger.info("Saving ENCRYPTED orbax checkpoint (xai_encrypted driver) to %s", path)
+        orbax_encrypted._require_array_leaves(state)
+        if save_concurrent_gb is not None:
+            array_handler_cls = (
+                ThrottledD2HArrayHandler if compressed else ThrottledNoCompressionArrayHandler
+            )
+        elif not compressed:
+            array_handler_cls = NoCompressionArrayHandler
+        else:
+            array_handler_cls = ocp.type_handlers.ArrayHandler
+        checkpointer = orbax_encrypted.get_encrypted_checkpointer(
+            kms_client, encryption_chunk_size, timeout_secs, save_concurrent_gb, array_handler_cls
+        )
+    else:
+        checkpointer = get_checkpointer(timeout_secs, save_concurrent_gb=save_concurrent_gb)
 
     with tracer.start_as_current_span("wait_for_previous_checkpoint"):
         checkpointer.wait_until_finished()
@@ -256,34 +284,35 @@ def save_checkpoint(
         state = multihost_utils.host_local_array_to_global_array(state, mesh, pspecs)
 
     original_handler = ocp.type_handlers.get_type_handler(jax.Array)
-    if save_concurrent_gb is not None:
-        concurrent_bytes = int(save_concurrent_gb) * 10**9
-        if compressed:
-            handler = ThrottledD2HArrayHandler(concurrent_bytes)
+    if kms_client is None:
+        if save_concurrent_gb is not None:
+            concurrent_bytes = int(save_concurrent_gb) * 10**9
+            if compressed:
+                handler = ThrottledD2HArrayHandler(concurrent_bytes)
+            else:
+                handler = ThrottledNoCompressionArrayHandler(concurrent_bytes)
+            ocp.type_handlers.register_type_handler(jax.Array, handler, override=True)
+            rank_logger.info(
+                "save_checkpoint: ThrottledD2HArrayHandler ACTIVE "
+                "save_concurrent_gb=%s compressed=%s path=%s",
+                save_concurrent_gb,
+                compressed,
+                path,
+            )
+        elif not compressed:
+            ocp.type_handlers.register_type_handler(
+                jax.Array, NoCompressionArrayHandler(), override=True
+            )
+            rank_logger.info(
+                "save_checkpoint: NoCompressionArrayHandler active (no D2H throttle) path=%s",
+                path,
+            )
         else:
-            handler = ThrottledNoCompressionArrayHandler(concurrent_bytes)
-        ocp.type_handlers.register_type_handler(jax.Array, handler, override=True)
-        rank_logger.info(
-            "save_checkpoint: ThrottledD2HArrayHandler ACTIVE "
-            "save_concurrent_gb=%s compressed=%s path=%s",
-            save_concurrent_gb,
-            compressed,
-            path,
-        )
-    elif not compressed:
-        ocp.type_handlers.register_type_handler(
-            jax.Array, NoCompressionArrayHandler(), override=True
-        )
-        rank_logger.info(
-            "save_checkpoint: NoCompressionArrayHandler active (no D2H throttle) path=%s",
-            path,
-        )
-    else:
-        rank_logger.info(
-            "save_checkpoint: stock Orbax ArrayHandler (no D2H throttle; "
-            "full addressable state staged to host at once) path=%s",
-            path,
-        )
+            rank_logger.info(
+                "save_checkpoint: stock Orbax ArrayHandler (no D2H throttle; "
+                "full addressable state staged to host at once) path=%s",
+                path,
+            )
 
     def _callback():
         ocp.type_handlers.register_type_handler(jax.Array, original_handler, override=True)
@@ -299,13 +328,16 @@ def save_checkpoint(
             lambda _: ocp.SaveArgs(chunk_byte_size=chunk_byte_size),
             state,
         )
-        checkpointer.save(
-            dest,
-            args=ocp.args.PyTreeSave(
-                state,
-                save_args=save_args,
-            ),
-        )
+        if kms_client is not None:
+            checkpointer.save(dest, args=ocp.args.PyTreeSave(state, save_args=save_args))
+        else:
+            checkpointer.save(
+                dest,
+                args=ocp.args.PyTreeSave(
+                    state,
+                    save_args=save_args,
+                ),
+            )
 
         rank_logger.info(
             "Started writing checkpoint to %s (save_concurrent_gb=%s, blocking=%s)",
@@ -329,4 +361,8 @@ def save_checkpoint(
 
 
 def wait_until_finished():
-    get_checkpointer().wait_until_finished()
+    if _CHECKPOINTER is not None:
+        _CHECKPOINTER.wait_until_finished()
+    _orbax_encrypted = sys.modules.get("xai_checkpointing.orbax_encrypted")
+    if _orbax_encrypted is not None:
+        _orbax_encrypted.wait_until_finished()

@@ -173,7 +173,7 @@ mod tests {
         AuthorFeatures, HydratedTweetCandidate, VfAction, ViewerAuthorRelationship, ViewerFeatures,
     };
     use crate::rules::fixtures::{author_viewer, candidate, logged_out_viewer, viewer, VIEWER_ID};
-    use crate::rules::{test_context, Rule};
+    use crate::rules::test_context;
 
     fn assert_drops(
         spec: &RuleSpec,

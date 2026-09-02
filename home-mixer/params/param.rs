@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-09-01T16:42:25Z
+// mirrored from config feature-switch defaults; last sync 2026-09-02T16:03:45Z
 use xai_feature_switches::param;
 
 param!(
@@ -134,7 +134,7 @@ param!(
     PhoenixRetrievalAggregationType,
     String,
     "rust_home_mixer_phoenix_retrieval_aggregation_type",
-    "DENSE_WITH_SHORT_DWELL"
+    "DENSE_WITH_LONG_DWELL"
 );
 
 param!(

@@ -114,6 +114,8 @@ message PredictNextActionsRequest {
   repeated ConvAssetIds conv_asset_ids = 18;
 
   PageDecodeParams pageDecode = 19;
+
+  bool returnBackboneScores = 20;
 }
 
 message PageDecodeParams {
@@ -256,6 +258,9 @@ message NextActionDistribution {
   RewardOutputs rewardOutputs = 8;
 
   SlateContext slateContext = 9;
+
+  repeated float backboneTopLogProbs = 10;
+  repeated float backboneContinuousValues = 11;
 }
 
 message RewardOutputs {

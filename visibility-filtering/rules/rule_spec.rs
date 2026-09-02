@@ -1,9 +1,8 @@
 use crate::models::VfAction;
 use crate::rules::context::{AuthorPredicates, TweetPredicates};
-use crate::rules::{Rule, RuleContext};
+use crate::rules::RuleContext;
 use xai_visibility_filtering::models::FilteredReason;
 
-#[derive(Clone)]
 pub(super) enum RuleSpec {
     Tweet {
         name: &'static str,
@@ -23,14 +22,13 @@ pub(super) enum RuleSpec {
     },
 }
 
-#[derive(Clone)]
 pub(super) enum RuleAction {
     Drop(FilteredReason),
     SensitiveMediaInterstitial(FilteredReason),
 }
 
-impl Rule for RuleSpec {
-    fn name(&self) -> &'static str {
+impl RuleSpec {
+    pub(super) fn name(&self) -> &'static str {
         match self {
             RuleSpec::Tweet { name, .. }
             | RuleSpec::Author { name, .. }
@@ -38,7 +36,7 @@ impl Rule for RuleSpec {
         }
     }
 
-    fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
+    pub(super) fn evaluate(&self, context: &RuleContext<'_>) -> VfAction {
         match self {
             RuleSpec::Tweet {
                 when,

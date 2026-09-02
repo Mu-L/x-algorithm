@@ -214,9 +214,9 @@ pub async fn build_prod_server(
     let fs_path = crate::config::fs_path();
     gating_countries.refresh_and_check_drift(&feature_switches, &fs_path);
     gating_countries.spawn_refresh(feature_switches, fs_path);
-    let policies = crate::rules::Policies::with_nsfw_gating_countries(gating_countries);
-    let (home_rule_count, recommendations_rule_count) = policies.rule_counts();
-    let filter_tweets = FilterTweets::new(hydration_pipeline, policies);
+    let rule_engine = crate::rules::RuleEngine::with_nsfw_gating_countries(gating_countries);
+    let (home_rule_count, recommendations_rule_count) = rule_engine.rule_counts();
+    let filter_tweets = FilterTweets::new(hydration_pipeline, rule_engine);
 
     warm_filter_tweets(&filter_tweets).await;
 

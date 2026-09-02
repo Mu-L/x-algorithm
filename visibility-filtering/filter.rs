@@ -1,7 +1,7 @@
 use crate::hydration::{HydrationOutput, HydrationPipeline, HydrationRequest};
 use crate::models::{RawCandidate, TweetId, VfAction};
 use crate::rules::metrics as ft_metrics;
-use crate::rules::{Policies, SafetyLevel, Verdict};
+use crate::rules::{RuleEngine, SafetyLevel, Verdict};
 use std::collections::HashMap;
 use tracing::{debug, info};
 use xai_visibility_filtering_proto as vf_pb;
@@ -32,14 +32,14 @@ pub struct FilterResponse {
 
 pub struct FilterTweets {
     hydration_pipeline: HydrationPipeline,
-    policies: Policies,
+    rule_engine: RuleEngine,
 }
 
 impl FilterTweets {
-    pub(crate) fn new(hydration_pipeline: HydrationPipeline, policies: Policies) -> Self {
+    pub(crate) fn new(hydration_pipeline: HydrationPipeline, rule_engine: RuleEngine) -> Self {
         Self {
             hydration_pipeline,
-            policies,
+            rule_engine,
         }
     }
 
@@ -71,7 +71,7 @@ impl FilterTweets {
             .map(|candidate| {
                 (
                     TweetId(candidate.tweet_id),
-                    self.policies
+                    self.rule_engine
                         .evaluate(request.safety_level, &viewer_features, candidate),
                 )
             })
@@ -96,7 +96,9 @@ impl FilterTweets {
                 FilterOutcome {
                     tweet_id: candidate.tweet_id,
                     verdict,
-                    safety_labels: safety_labels.get(&candidate.tweet_id).cloned(),
+                    safety_labels: safety_labels
+                        .get(&candidate.tweet_id)
+                        .map(|labels| vf_pb::SafetyLabelMap::clone(labels)),
                 }
             })
             .collect();
@@ -192,7 +194,7 @@ pub(crate) mod test_support {
                 labels,
                 crate::hydration::FallbackCacheMode::Disabled,
             ),
-            Policies::new(),
+            RuleEngine::new(),
         )
     }
 }

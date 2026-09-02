@@ -126,7 +126,7 @@ pub(crate) struct HydrationPipeline {
 pub(crate) struct HydrationOutput {
     pub(crate) viewer_features: ViewerFeatures,
     pub(crate) candidates: Vec<HydratedTweetCandidate>,
-    pub(crate) safety_labels: HashMap<TweetId, vf_pb::SafetyLabelMap>,
+    pub(crate) safety_labels: HashMap<TweetId, Arc<vf_pb::SafetyLabelMap>>,
 }
 
 impl HydrationPipeline {

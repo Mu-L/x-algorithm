@@ -5,7 +5,7 @@ use crate::models::{
 use crate::rules::fixtures::{
     author_viewer, candidate, logged_out_viewer, sensitive_opt_in_viewer, viewer, VIEWER_ID,
 };
-use crate::rules::{Policies, SafetyLevel};
+use crate::rules::{RuleEngine, SafetyLevel};
 use std::collections::BTreeSet;
 use xai_core_entities::entities::{EditControl, EditControlInitial, TakedownReason};
 use xai_visibility_filtering::models::{
@@ -26,10 +26,10 @@ struct Case {
 
 #[test]
 fn golden_corpus_pins_policy_verdicts() {
-    let policies = Policies::new();
+    let rule_engine = RuleEngine::new();
     let mut failures = Vec::new();
     for case in cases() {
-        let verdict = policies.evaluate(case.level, &case.viewer, &case.candidate);
+        let verdict = rule_engine.evaluate(case.level, &case.viewer, &case.candidate);
         if !action_eq(&verdict.action, &case.expected_action)
             || verdict.decided_by != case.expected_decided_by
         {
@@ -54,10 +54,10 @@ fn golden_corpus_pins_policy_verdicts() {
 
 #[test]
 fn every_wired_rule_decides_a_corpus_case() {
-    let policies = Policies::new();
+    let rule_engine = RuleEngine::new();
     let wired: BTreeSet<&'static str> = [FilterAll, TimelineHome, TimelineHomeRecommendations]
         .into_iter()
-        .flat_map(|level| policies.wired_rule_names(level))
+        .flat_map(|level| rule_engine.wired_rule_names(level))
         .collect();
     let deciders: BTreeSet<&'static str> = cases()
         .iter()
@@ -66,7 +66,7 @@ fn every_wired_rule_decides_a_corpus_case() {
     let missing: Vec<&&'static str> = wired.difference(&deciders).collect();
     assert!(
         missing.is_empty(),
-        "rules wired in Policies but never the decider of any corpus case: {missing:?}"
+        "rules wired in RuleEngine but never the decider of any corpus case: {missing:?}"
     );
 }
 
