@@ -83,6 +83,8 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
             }
         }
 
+        in_network_ids.sort_unstable();
+        in_network_ids.dedup();
         oon_ids.sort_unstable();
         oon_ids.dedup();
 
