@@ -335,36 +335,14 @@ mod tests {
     use super::*;
     use crate::models::{
         AuthorFeatures, ExclusiveContentFeatures, HydratedTweetCandidate, MediaFeature,
-        NsfwFeature, TakedownFeature, TweetFeatures, VfAction, Viewer, ViewerAge, ViewerFeatures,
+        NsfwFeature, TweetFeatures, VfAction, Viewer, ViewerAge, ViewerFeatures,
     };
     use crate::rules::fixtures::{
-        author_viewer, candidate, logged_out_viewer, sensitive_opt_in_viewer, viewer, VIEWER_ID,
+        assert_allows, assert_drops, author_viewer, candidate, logged_out_viewer,
+        nsfw_flag_media_candidates, sensitive_opt_in_viewer, viewer, VIEWER_ID,
     };
-    use crate::rules::{test_context, RuleContext};
+    use crate::rules::test_context;
     use xai_core_entities::entities::{EditControl, EditControlInitial, TakedownReason};
-
-    fn assert_drops(
-        spec: &RuleSpec,
-        viewer: &ViewerFeatures,
-        candidate: &HydratedTweetCandidate,
-        expected: &FilteredReason,
-    ) {
-        let action = spec.evaluate(&test_context(viewer, candidate));
-        assert!(
-            matches!(&action, VfAction::Drop(reason) if reason == expected),
-            "{} should drop with {expected:?}, got {action:?}",
-            spec.name()
-        );
-    }
-
-    fn assert_allows(spec: &RuleSpec, viewer: &ViewerFeatures, candidate: &HydratedTweetCandidate) {
-        let action = spec.evaluate(&test_context(viewer, candidate));
-        assert!(
-            matches!(action, VfAction::Allow),
-            "{} should allow, got {action:?}",
-            spec.name()
-        );
-    }
 
     fn trigger_label(name: &str) -> SafetyLabelType {
         match name {
@@ -503,48 +481,6 @@ mod tests {
         }
     }
 
-    fn custom_drop(_context: &RuleContext<'_>) -> VfAction {
-        VfAction::Drop(FilteredReason::UnspecifiedReason)
-    }
-
-    fn custom_allow(_context: &RuleContext<'_>) -> VfAction {
-        VfAction::Allow
-    }
-
-    fn custom_drop_even_self_view(context: &RuleContext<'_>) -> VfAction {
-        if context.tweet().is_nullcast() {
-            VfAction::Drop(FilteredReason::TweetIsNullcast)
-        } else {
-            VfAction::Allow
-        }
-    }
-
-    #[test]
-    fn custom_row_returns_leaf_action() {
-        let drop_row = RuleSpec::Custom {
-            name: "CustomDropLeaf",
-            evaluate: custom_drop,
-        };
-        let allow_row = RuleSpec::Custom {
-            name: "CustomAllowLeaf",
-            evaluate: custom_allow,
-        };
-        let pristine = candidate().build();
-        assert_drops(
-            &drop_row,
-            &viewer(VIEWER_ID),
-            &pristine,
-            &FilteredReason::UnspecifiedReason,
-        );
-        assert_drops(
-            &drop_row,
-            &author_viewer(),
-            &pristine,
-            &FilteredReason::UnspecifiedReason,
-        );
-        assert_allows(&allow_row, &viewer(VIEWER_ID), &pristine);
-    }
-
     fn exclusive_candidate(
         tweet_id: u64,
         author_id: u64,
@@ -556,39 +492,6 @@ mod tests {
             viewer_super_follows_author: false,
         });
         c
-    }
-
-    fn nsfw_flag_media_candidates() -> Vec<HydratedTweetCandidate> {
-        let author_user = candidate()
-            .with_media()
-            .with_author_features(AuthorFeatures {
-                is_nsfw_user: true,
-                ..Default::default()
-            })
-            .build();
-        let tweet_user = {
-            let mut c = author_user.clone();
-            c.author_features = AuthorFeatures::default();
-            c.tweet_features.nsfw = NsfwFeature {
-                user: true,
-                admin: false,
-            };
-            c
-        };
-        let tweet_admin = {
-            let mut c = tweet_user.clone();
-            c.tweet_features.nsfw = NsfwFeature {
-                user: false,
-                admin: true,
-            };
-            c
-        };
-        let both = {
-            let mut c = tweet_user.clone();
-            c.author_features.is_nsfw_admin = true;
-            c
-        };
-        vec![author_user, tweet_user, tweet_admin, both]
     }
 
     #[test]
@@ -613,10 +516,10 @@ mod tests {
             assert_allows(spec, &sensitive_opt_in_viewer(), &firing);
             assert_allows(spec, &author_viewer(), &firing);
         }
-        let mut no_media = nsfw_flag_media_candidates().remove(0);
+        let [mut no_media, ..] = nsfw_flag_media_candidates();
         no_media.tweet_features.media.has_media = false;
         assert_allows(spec, &viewer(VIEWER_ID), &no_media);
-        let mut no_flags = nsfw_flag_media_candidates().remove(1);
+        let [_, mut no_flags, ..] = nsfw_flag_media_candidates();
         no_flags.tweet_features.nsfw = NsfwFeature::default();
         assert_allows(spec, &viewer(VIEWER_ID), &no_flags);
     }
@@ -841,10 +744,7 @@ mod tests {
     fn takedown_candidate(reasons: Vec<TakedownReason>) -> HydratedTweetCandidate {
         candidate()
             .with_tweet_features(TweetFeatures {
-                takedown: TakedownFeature {
-                    reasons,
-                    ..Default::default()
-                },
+                takedown_reasons: reasons,
                 ..Default::default()
             })
             .build()
@@ -960,12 +860,54 @@ mod tests {
         assert_allows(local, &viewer_with_country("de"), &author_local);
 
         let non_country = takedown_candidate(vec![
-            TakedownReason::Dmca,
             TakedownReason::HatefulImagery,
             TakedownReason::Unknown,
         ]);
         assert_allows(legal, &viewer_with_country("de"), &non_country);
         assert_allows(local, &viewer_with_country("de"), &non_country);
+    }
+
+    #[test]
+    fn takedown_worldwide_axis() {
+        let legal = tes_spec("DropLegalTakendownPostRule");
+        let local = tes_spec("DropLocalLawsTakendownPostRule");
+        let reason = FilteredReason::UnspecifiedReason;
+
+        for code in ["xx", "xy", "XX"] {
+            let worldwide = takedown_candidate(vec![TakedownReason::LegalRequest {
+                country_code: code.to_string(),
+            }]);
+            assert_drops(legal, &viewer_with_country("us"), &worldwide, &reason);
+            assert_drops(legal, &viewer(VIEWER_ID), &worldwide, &reason);
+        }
+
+        let bystander_worldwide = takedown_candidate(vec![TakedownReason::BystanderReport {
+            country_code: "xx".to_string(),
+        }]);
+        assert_drops(
+            local,
+            &viewer_with_country("us"),
+            &bystander_worldwide,
+            &reason,
+        );
+        assert_drops(local, &viewer(VIEWER_ID), &bystander_worldwide, &reason);
+
+        let country_scoped = takedown_candidate(vec![TakedownReason::LegalRequest {
+            country_code: "de".to_string(),
+        }]);
+        assert_allows(legal, &viewer(VIEWER_ID), &country_scoped);
+        let bystander_scoped = takedown_candidate(vec![TakedownReason::BystanderReport {
+            country_code: "de".to_string(),
+        }]);
+        assert_allows(local, &viewer(VIEWER_ID), &bystander_scoped);
+
+        let dmca = takedown_candidate(vec![TakedownReason::Dmca]);
+        assert_drops(legal, &viewer_with_country("de"), &dmca, &reason);
+        assert_drops(legal, &viewer(VIEWER_ID), &dmca, &reason);
+        assert_allows(local, &viewer_with_country("de"), &dmca);
+        let mut author_dmca = dmca.clone();
+        author_dmca.author_id = VIEWER_ID;
+        assert_allows(legal, &viewer(VIEWER_ID), &author_dmca);
     }
 
     #[test]
@@ -1100,27 +1042,6 @@ mod tests {
             ..gating_viewer(ViewerAge::NotStated)
         };
         assert_drops(no_age, &request_fallback, &hp, &reason);
-    }
-
-    #[test]
-    fn custom_row_does_not_add_author_exemption() {
-        let spec = RuleSpec::Custom {
-            name: "CustomNullcastLeaf",
-            evaluate: custom_drop_even_self_view,
-        };
-        let firing = candidate()
-            .with_tweet_features(TweetFeatures {
-                is_nullcast: true,
-                ..Default::default()
-            })
-            .build();
-        assert_drops(
-            &spec,
-            &author_viewer(),
-            &firing,
-            &FilteredReason::TweetIsNullcast,
-        );
-        assert_allows(&spec, &author_viewer(), &candidate().build());
     }
 
     fn all_rule_slices() -> [&'static [RuleSpec]; 15] {

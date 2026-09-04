@@ -349,9 +349,9 @@ mod tests {
 
     #[tokio::test]
     async fn full_warm_channel_does_not_affect_fallback_result() {
-        use super::super::warmer::SampledWarmer;
+        use super::super::warmer::CacheWarmer;
 
-        let (warmer, _rx) = SampledWarmer::without_drain_task(1, 100);
+        let (warmer, _rx) = CacheWarmer::without_drain_task(1);
         let warmer = Arc::new(warmer);
         warmer.warm(vec![0]);
 

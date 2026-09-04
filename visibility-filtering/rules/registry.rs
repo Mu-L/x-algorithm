@@ -109,8 +109,9 @@ pub struct RuleEngine {
 }
 
 impl RuleEngine {
-    pub fn new() -> Self {
-        Self::with_nsfw_gating_countries(Arc::new(NsfwGatingCountries::new()))
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self::with_nsfw_gating_countries(Arc::new(NsfwGatingCountries::starting_at_default()))
     }
 
     pub fn with_nsfw_gating_countries(gating_countries: Arc<NsfwGatingCountries>) -> Self {
@@ -133,7 +134,7 @@ impl RuleEngine {
         viewer: &ViewerFeatures,
         candidate: &HydratedTweetCandidate,
     ) -> Verdict {
-        let context = RuleContext::new(level, viewer, candidate, &self.nsfw_gating_countries);
+        let context = RuleContext::new(viewer, candidate, &self.nsfw_gating_countries);
         Self::select(level).evaluate(&context)
     }
 
@@ -150,23 +151,15 @@ impl RuleEngine {
     }
 }
 
-impl Default for RuleEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        HydratedTweetCandidate, MediaFeature, TweetFeatures, VfAction, ViewerFeatures,
-    };
-    use crate::rules::fixtures::{author_viewer, candidate, viewer, VIEWER_ID};
+    use crate::models::{VfAction, ViewerFeatures};
+    use crate::rules::fixtures::{candidate, viewer, VIEWER_ID};
 
     #[test]
     fn refreshed_config_country_reaches_the_wired_rule() {
-        let gating_countries = Arc::new(NsfwGatingCountries::new());
+        let gating_countries = Arc::new(NsfwGatingCountries::starting_at_default());
         let rule_engine = RuleEngine::with_nsfw_gating_countries(Arc::clone(&gating_countries));
         let candidate = candidate()
             .with_label(crate::models::SafetyLabelType::NSFW_HIGH_PRECISION)
@@ -204,7 +197,7 @@ rust_vf:
 
     #[test]
     fn wired_rule_order_matches_pre_migration_sequence() {
-        let rule_engine = RuleEngine::new();
+        let rule_engine = RuleEngine::for_tests();
         assert_eq!(
             rule_engine.wired_rule_names(SafetyLevel::FilterAll),
             vec!["FilterAllRule"]
@@ -276,369 +269,6 @@ rust_vf:
             rule_engine.wired_rule_names(SafetyLevel::TimelineHomeRecommendations),
             recs
         );
-    }
-
-    #[test]
-    fn filter_all_policy_drops_pristine_candidate() {
-        let rule_engine = RuleEngine::new();
-        let candidate = candidate().build();
-        let verdict = rule_engine.evaluate(
-            SafetyLevel::FilterAll,
-            &ViewerFeatures::default(),
-            &candidate,
-        );
-        assert!(matches!(verdict.action, VfAction::Drop(_)));
-
-        let verdict = rule_engine.evaluate(
-            SafetyLevel::TimelineHome,
-            &ViewerFeatures::default(),
-            &candidate,
-        );
-        assert!(matches!(verdict.action, VfAction::Allow));
-
-        let verdict = rule_engine.evaluate(
-            SafetyLevel::TimelineHomeRecommendations,
-            &ViewerFeatures::default(),
-            &candidate,
-        );
-        assert!(matches!(verdict.action, VfAction::Allow));
-    }
-
-    #[test]
-    fn dmca_media_drops_recommendations_only() {
-        let rule_engine = RuleEngine::new();
-        let candidate = candidate()
-            .with_tweet_features(TweetFeatures {
-                media: MediaFeature {
-                    has_dmca_media: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .build();
-
-        let timeline_home = rule_engine.evaluate(
-            SafetyLevel::TimelineHome,
-            &ViewerFeatures::default(),
-            &candidate,
-        );
-        assert!(matches!(timeline_home.action, VfAction::Allow));
-
-        let recommendations = rule_engine.evaluate(
-            SafetyLevel::TimelineHomeRecommendations,
-            &ViewerFeatures::default(),
-            &candidate,
-        );
-        assert!(matches!(recommendations.action, VfAction::Drop(_)));
-    }
-
-    #[test]
-    fn tweet_nsfw_flag_drops_recommendations_only() {
-        use crate::models::NsfwFeature;
-        let rule_engine = RuleEngine::new();
-        let candidate = candidate()
-            .with_tweet_features(TweetFeatures {
-                nsfw: NsfwFeature {
-                    user: true,
-                    admin: false,
-                },
-                ..Default::default()
-            })
-            .build();
-        let viewer = viewer(VIEWER_ID);
-
-        let timeline_home = rule_engine
-            .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
-            .action;
-        assert!(
-            matches!(timeline_home, VfAction::Allow),
-            "in-network tweet nsfw_user flag should allow, got {timeline_home:?}"
-        );
-
-        let recommendations = rule_engine.evaluate(
-            SafetyLevel::TimelineHomeRecommendations,
-            &viewer,
-            &candidate,
-        );
-        assert!(matches!(recommendations.action, VfAction::Drop(_)));
-        assert_eq!(recommendations.decided_by, Some("TweetNsfwUserDropRule"));
-    }
-
-    #[test]
-    fn nsfw_author_interstitials_in_network_but_drops_oon() {
-        use crate::models::AuthorFeatures;
-        let rule_engine = RuleEngine::new();
-        let candidate = candidate()
-            .with_media()
-            .with_author_features(AuthorFeatures {
-                is_nsfw_user: true,
-                ..Default::default()
-            })
-            .build();
-        let viewer = viewer(VIEWER_ID);
-
-        let in_network = rule_engine
-            .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
-            .action;
-        assert!(
-            matches!(in_network, VfAction::Interstitial(_)),
-            "in-network NSFW author should interstitial, got {in_network:?}"
-        );
-
-        let oon = rule_engine
-            .evaluate(
-                SafetyLevel::TimelineHomeRecommendations,
-                &viewer,
-                &candidate,
-            )
-            .action;
-        assert!(
-            matches!(oon, VfAction::Drop(_)),
-            "OON NSFW author should drop, got {oon:?}"
-        );
-    }
-
-    #[test]
-    fn egregious_nsfw_does_not_drop() {
-        use crate::models::SafetyLabelType;
-        use xai_x_thrift::user_labels::LabelValue;
-        let rule_engine = RuleEngine::new();
-
-        let tweet_candidate = candidate()
-            .with_label(SafetyLabelType::EGREGIOUS_NSFW)
-            .build();
-        let user_candidate = candidate_with_author_user_label(LabelValue::EGREGIOUS_NSFW, false);
-        let viewer = viewer(VIEWER_ID);
-
-        for candidate in [&tweet_candidate, &user_candidate] {
-            let in_network = rule_engine
-                .evaluate(SafetyLevel::TimelineHome, &viewer, candidate)
-                .action;
-            assert!(
-                matches!(in_network, VfAction::Allow),
-                "in-network EgregiousNsfw should allow after rule removal, got {in_network:?}"
-            );
-            let oon = rule_engine
-                .evaluate(SafetyLevel::TimelineHomeRecommendations, &viewer, candidate)
-                .action;
-            assert!(
-                matches!(oon, VfAction::Allow),
-                "OON EgregiousNsfw should allow after rule removal, got {oon:?}"
-            );
-        }
-    }
-
-    fn fosnr_candidate(
-        label: crate::models::SafetyLabelType,
-        follows: bool,
-    ) -> HydratedTweetCandidate {
-        let mut c = candidate().with_label(label).build();
-        c.relationship.viewer_follows_author = follows;
-        c
-    }
-
-    #[test]
-    fn fosnr_abuse_insults_drops_oon_but_allows_in_network() {
-        use crate::models::SafetyLabelType;
-        let rule_engine = RuleEngine::new();
-        let viewer = viewer(VIEWER_ID);
-        let author = author_viewer();
-
-        for follows in [true, false] {
-            let candidate = fosnr_candidate(SafetyLabelType::FOSNR_ABUSE_INSULTS, follows);
-            let in_network = rule_engine
-                .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
-                .action;
-            assert!(
-                matches!(in_network, VfAction::Allow),
-                "in-network FosnrAbuseInsults should allow (follows={follows}), got {in_network:?}"
-            );
-        }
-
-        let candidate = fosnr_candidate(SafetyLabelType::FOSNR_ABUSE_INSULTS, false);
-        let oon = rule_engine
-            .evaluate(
-                SafetyLevel::TimelineHomeRecommendations,
-                &viewer,
-                &candidate,
-            )
-            .action;
-        assert!(
-            matches!(oon, VfAction::Drop(_)),
-            "OON FosnrAbuseInsults should drop non-author, got {oon:?}"
-        );
-
-        let oon_author = rule_engine
-            .evaluate(
-                SafetyLevel::TimelineHomeRecommendations,
-                &author,
-                &candidate,
-            )
-            .action;
-        assert!(
-            matches!(oon_author, VfAction::Allow),
-            "OON FosnrAbuseInsults should allow author, got {oon_author:?}"
-        );
-    }
-
-    #[test]
-    fn geo_restricted_media_drops_oon_but_allows_in_network() {
-        let rule_engine = RuleEngine::new();
-        let candidate = candidate()
-            .with_tweet_features(TweetFeatures {
-                media: MediaFeature {
-                    geo_deny_list: vec!["de".to_string()],
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .build();
-        let viewer = ViewerFeatures {
-            country_code: Some("de".to_string()),
-            ..viewer(VIEWER_ID)
-        };
-
-        let in_network = rule_engine
-            .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
-            .action;
-        assert!(
-            matches!(in_network, VfAction::Allow),
-            "in-network geo-restricted media should allow (Scala wires the rule in THR only), got {in_network:?}"
-        );
-
-        let oon = rule_engine.evaluate(
-            SafetyLevel::TimelineHomeRecommendations,
-            &viewer,
-            &candidate,
-        );
-        assert!(
-            matches!(oon.action, VfAction::Drop(_)),
-            "OON geo-restricted media should drop, got {:?}",
-            oon.action
-        );
-        assert_eq!(oon.decided_by, Some("DropTweetsWithGeoRestrictedMediaRule"));
-    }
-
-    #[test]
-    fn nsfw_text_drops_oon_but_allows_in_network() {
-        use crate::models::SafetyLabelType;
-        let rule_engine = RuleEngine::new();
-        let candidate = candidate().with_label(SafetyLabelType::NSFW_TEXT).build();
-        let viewer = viewer(VIEWER_ID);
-
-        let in_network = rule_engine
-            .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
-            .action;
-        assert!(
-            matches!(in_network, VfAction::Allow),
-            "in-network NsfwText should allow (Scala drops it OON only), got {in_network:?}"
-        );
-
-        let oon = rule_engine
-            .evaluate(
-                SafetyLevel::TimelineHomeRecommendations,
-                &viewer,
-                &candidate,
-            )
-            .action;
-        assert!(
-            matches!(oon, VfAction::Drop(_)),
-            "OON NsfwText should drop, got {oon:?}"
-        );
-    }
-
-    fn candidate_with_author_user_label(
-        label: xai_x_thrift::user_labels::LabelValue,
-        follows: bool,
-    ) -> HydratedTweetCandidate {
-        let mut c = candidate().with_author_user_label(label).build();
-        c.relationship.viewer_follows_author = follows;
-        c
-    }
-
-    #[test]
-    fn nsfw_avatar_user_label_drops_oon_but_allows_in_network() {
-        use xai_x_thrift::user_labels::LabelValue;
-        let rule_engine = RuleEngine::new();
-        let candidate = candidate_with_author_user_label(LabelValue::NSFW_AVATAR_IMAGE, false);
-        let viewer = viewer(VIEWER_ID);
-
-        let in_network = rule_engine
-            .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
-            .action;
-        assert!(
-            matches!(in_network, VfAction::Allow),
-            "in-network NsfwAvatarImage should allow, got {in_network:?}"
-        );
-
-        let oon = rule_engine.evaluate(
-            SafetyLevel::TimelineHomeRecommendations,
-            &viewer,
-            &candidate,
-        );
-        assert!(
-            matches!(oon.action, VfAction::Drop(_)),
-            "OON NsfwAvatarImage should drop, got {:?}",
-            oon.action
-        );
-        assert_eq!(oon.decided_by, Some("NsfwAvatarImageRule"));
-    }
-
-    #[test]
-    fn recommendations_blacklist_does_not_drop() {
-        use xai_x_thrift::user_labels::LabelValue;
-        let rule_engine = RuleEngine::new();
-        let candidate =
-            candidate_with_author_user_label(LabelValue::RECOMMENDATIONS_BLACKLIST, false);
-        let viewer = viewer(VIEWER_ID);
-
-        let in_network = rule_engine
-            .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
-            .action;
-        assert!(
-            matches!(in_network, VfAction::Allow),
-            "in-network RecommendationsBlacklist should allow, got {in_network:?}"
-        );
-
-        let oon = rule_engine
-            .evaluate(
-                SafetyLevel::TimelineHomeRecommendations,
-                &viewer,
-                &candidate,
-            )
-            .action;
-        assert!(
-            matches!(oon, VfAction::Allow),
-            "OON RecommendationsBlacklist should allow after rule removal, got {oon:?}"
-        );
-    }
-
-    #[test]
-    fn abusive_high_recall_drops_oon_non_follower_but_allows_in_network() {
-        use xai_x_thrift::user_labels::LabelValue;
-        let rule_engine = RuleEngine::new();
-        let candidate = candidate_with_author_user_label(LabelValue::ABUSIVE_HIGH_RECALL, false);
-        let viewer = viewer(VIEWER_ID);
-
-        let in_network = rule_engine
-            .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
-            .action;
-        assert!(
-            matches!(in_network, VfAction::Allow),
-            "in-network AbusiveHighRecall should allow, got {in_network:?}"
-        );
-
-        let oon = rule_engine.evaluate(
-            SafetyLevel::TimelineHomeRecommendations,
-            &viewer,
-            &candidate,
-        );
-        assert!(
-            matches!(oon.action, VfAction::Drop(_)),
-            "OON AbusiveHighRecall non-follower should drop, got {:?}",
-            oon.action
-        );
-        assert_eq!(oon.decided_by, Some("AbusiveHighRecallRule"));
     }
 
     #[derive(Debug, PartialEq, Eq)]

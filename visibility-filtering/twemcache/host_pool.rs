@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use quanta::{Clock, Instant};
@@ -155,6 +155,14 @@ impl HostPool {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "every idx comes from enumerate() over self.slots"
+    )]
+    fn slot_guard(&self, idx: usize) -> MutexGuard<'_, ConnSlot> {
+        lock_slot(&self.slots[idx])
+    }
+
     pub async fn get(&self, key: &Key) -> Result<Option<Value>> {
         let now = self.clock.now();
         let (conn, idx, is_probe) = match self.select(now).await? {
@@ -165,7 +173,7 @@ impl HostPool {
 
         if !is_probe && result.as_ref().err().is_some_and(is_dead_socket_err) {
             {
-                let mut g = self.slots[idx].lock().unwrap();
+                let mut g = self.slot_guard(idx);
                 if g.conn.as_ref().is_some_and(|c| Arc::ptr_eq(c, &conn)) {
                     g.conn = None;
                 }
@@ -221,7 +229,7 @@ impl HostPool {
         let mut live_exists = false;
         let mut any_need = false;
         for (idx, slot) in self.slots.iter().enumerate() {
-            let g = slot.lock().unwrap();
+            let g = lock_slot(slot);
             if g.health.is_live() && !g.has_living_conn() {
                 any_need = true;
             }
@@ -238,7 +246,7 @@ impl HostPool {
 
     async fn ensure_live_open(&self, now: Instant) {
         let any_need = self.slots.iter().any(|s| {
-            let g = s.lock().unwrap();
+            let g = lock_slot(s);
             g.health.is_live() && !g.has_living_conn()
         });
         if !any_need {
@@ -248,7 +256,7 @@ impl HostPool {
         let _guard = self.open_lock.lock().await;
         for slot in &self.slots {
             let need = {
-                let g = slot.lock().unwrap();
+                let g = lock_slot(slot);
                 g.health.is_live() && !g.has_living_conn()
             };
             if !need {
@@ -256,14 +264,14 @@ impl HostPool {
             }
             match self.factory.open().await {
                 Ok(conn) => {
-                    let mut g = slot.lock().unwrap();
+                    let mut g = lock_slot(slot);
                     if g.health.is_live() && !g.has_living_conn() {
                         g.conn = Some(conn);
                     }
                 }
                 Err(_) => {
                     let tripped = {
-                        let mut g = slot.lock().unwrap();
+                        let mut g = lock_slot(slot);
                         if g.health.is_live() {
                             g.health.record_connect_failure(now);
                             true
@@ -283,7 +291,7 @@ impl HostPool {
         let idx = {
             let mut claimed = None;
             for (i, slot) in self.slots.iter().enumerate() {
-                let mut g = slot.lock().unwrap();
+                let mut g = lock_slot(slot);
                 if g.health.is_probe_eligible(now, self.probe_stale_after) {
                     g.health.begin_probe(now);
                     g.conn = None;
@@ -297,12 +305,12 @@ impl HostPool {
         let _guard = self.open_lock.lock().await;
         match self.factory.open().await {
             Ok(conn) => {
-                let mut g = self.slots[idx].lock().unwrap();
+                let mut g = self.slot_guard(idx);
                 g.conn = Some(Arc::clone(&conn));
                 Some((idx, conn))
             }
             Err(_) => {
-                let mut g = self.slots[idx].lock().unwrap();
+                let mut g = self.slot_guard(idx);
                 g.health.note_probe(Outcome::Failure, now);
                 None
             }
@@ -312,7 +320,7 @@ impl HostPool {
     fn record(&self, idx: usize, result: &Result<Option<Value>>, is_probe: bool, now: Instant) {
         let outcome = classify(result);
         let event = {
-            let mut g = self.slots[idx].lock().unwrap();
+            let mut g = self.slot_guard(idx);
             if is_probe {
                 g.health.note_probe(outcome, now);
                 match outcome {
@@ -333,12 +341,17 @@ impl HostPool {
 
     pub(crate) fn for_each_depth(&self, mut sink: impl FnMut(usize)) {
         for slot in &self.slots {
-            let g = slot.lock().unwrap();
+            let g = lock_slot(slot);
             if let Some(c) = &g.conn {
                 sink(c.in_flight());
             }
         }
     }
+}
+
+#[expect(clippy::unwrap_used, reason = "propagate slot-lock poisoning")]
+fn lock_slot(slot: &Mutex<ConnSlot>) -> MutexGuard<'_, ConnSlot> {
+    slot.lock().unwrap()
 }
 
 #[cfg(test)]

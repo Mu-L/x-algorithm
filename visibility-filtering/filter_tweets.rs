@@ -4,9 +4,7 @@ use crate::reference_compare::{ReferenceCompareHarness, TweetVerdict};
 use crate::rules::metrics::{self as ft_metrics, RequestMetricsGuard};
 use crate::rules::SafetyLevel;
 use std::sync::Arc;
-use std::time::Instant;
 use tonic::{Request, Response, Status};
-use tracing::info;
 use xai_visibility_filtering_proto as vf_pb;
 
 pub struct FilterTweetsEndpoint {
@@ -30,7 +28,6 @@ impl FilterTweetsEndpoint {
         request: Request<vf_pb::VisibilityFilterRequest>,
     ) -> Result<Response<vf_pb::VisibilityFilterResponse>, Status> {
         let request_metrics = RequestMetricsGuard::new();
-        let start = Instant::now();
         let req = request.into_inner();
         ft_metrics::record_batch_size(req.tweets.len());
         let viewer_id = normalize_viewer_id(req.viewer_id);
@@ -43,14 +40,6 @@ impl FilterTweetsEndpoint {
                 SafetyLevel::TimelineHomeRecommendations
             }
         };
-        info!(
-            viewer_id = req.viewer_id,
-            tweet_count = req.tweets.len(),
-            country_code = ?req.country_code,
-            safety_level = ?safety_level,
-            "VF request"
-        );
-
         let candidates: Vec<RawCandidate> = req
             .tweets
             .iter()
@@ -97,14 +86,6 @@ impl FilterTweetsEndpoint {
             .into_iter()
             .map(to_visibility_result)
             .collect();
-
-        info!(
-            tweet_count = response.summary.tweet_count,
-            drop_count = response.summary.drop_count,
-            not_found_count = response.summary.unresolved_author_count,
-            latency_ms = start.elapsed().as_millis(),
-            "VF response"
-        );
 
         request_metrics.mark_success();
         Ok(Response::new(vf_pb::VisibilityFilterResponse { results }))
@@ -191,51 +172,22 @@ mod tests {
     }
 
     #[test]
-    fn allow_maps_to_proto_result() {
-        let result = to_visibility_result(outcome(7, VfAction::Allow));
+    fn actions_map_to_proto_kinds() {
+        let cases = [
+            (VfAction::Allow, vf_pb::action::Kind::Allow(true)),
+            (
+                VfAction::Drop(FilteredReason::ContainNsfwMedia),
+                vf_pb::action::Kind::Drop(vf_pb::DropReason {}),
+            ),
+            (
+                VfAction::Interstitial(FilteredReason::ContainNsfwMedia),
+                vf_pb::action::Kind::Interstitial(true),
+            ),
+        ];
 
-        assert_eq!(result.tweet_id, 7);
-        assert!(matches!(
-            result.action.unwrap().kind,
-            Some(vf_pb::action::Kind::Allow(true))
-        ));
-        assert!(result.filtered_reason.is_none());
-    }
-
-    #[test]
-    fn drop_maps_to_proto_result_with_labels() {
-        let labels = vf_pb::SafetyLabelMap::default();
-        let mut drop = outcome(8, VfAction::Drop(FilteredReason::ContainNsfwMedia));
-        drop.safety_labels = Some(labels.clone());
-        let result = to_visibility_result(drop);
-
-        assert_eq!(result.tweet_id, 8);
-        assert!(matches!(
-            result.action.unwrap().kind,
-            Some(vf_pb::action::Kind::Drop(_))
-        ));
-        assert!(matches!(
-            result.filtered_reason.unwrap().reason,
-            Some(vf_pb::filtered_reason::Reason::ContainNsfwMedia(true))
-        ));
-        assert_eq!(result.safety_labels, Some(labels));
-    }
-
-    #[test]
-    fn interstitial_maps_to_proto_result() {
-        let result = to_visibility_result(outcome(
-            9,
-            VfAction::Interstitial(FilteredReason::ContainNsfwMedia),
-        ));
-
-        assert_eq!(result.tweet_id, 9);
-        assert!(matches!(
-            result.action.unwrap().kind,
-            Some(vf_pb::action::Kind::Interstitial(true))
-        ));
-        assert!(matches!(
-            result.filtered_reason.unwrap().reason,
-            Some(vf_pb::filtered_reason::Reason::ContainNsfwMedia(true))
-        ));
+        for (action, expected) in cases {
+            let result = to_visibility_result(outcome(1, action));
+            assert_eq!(result.action.and_then(|action| action.kind), Some(expected));
+        }
     }
 }

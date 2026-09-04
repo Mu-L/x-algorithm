@@ -8,8 +8,8 @@ pub mod viewer;
 pub use author::{AuthorFeatures, UserLabelSet};
 pub use exclusive_content::ExclusiveContentFeatures;
 pub use relationship::ViewerAuthorRelationship;
-pub use safety_labels::{SafetyLabel, SafetyLabelMap, SafetyLabelType};
-pub use tweet::{CoreFeature, MediaFeature, NsfwFeature, TakedownFeature, TweetFeatures};
+pub use safety_labels::{SafetyLabelMap, SafetyLabelType};
+pub use tweet::{CoreFeature, MediaFeature, NsfwFeature, TweetFeatures};
 pub use viewer::{Viewer, ViewerAge, ViewerFeatures, ADULT_AGE_YEARS};
 
 use std::collections::HashMap;

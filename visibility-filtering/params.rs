@@ -26,7 +26,7 @@ pub struct NsfwGatingCountries {
 }
 
 impl NsfwGatingCountries {
-    pub fn new() -> Self {
+    pub fn starting_at_default() -> Self {
         Self {
             countries: ArcSwap::from_pointee(default_nsfw_gating_countries()),
         }
@@ -36,6 +36,7 @@ impl NsfwGatingCountries {
         self.countries.load().iter().any(|c| c == country_code)
     }
 
+    #[cfg(test)]
     pub fn refresh_from(&self, feature_switches: &FeatureSwitches) {
         let (_, resolved) = resolve_with_origin(feature_switches);
         self.countries.store(Arc::new(resolved));
@@ -60,12 +61,6 @@ impl NsfwGatingCountries {
                 cache.refresh_and_check_drift(&feature_switches, &fs_path);
             }
         });
-    }
-}
-
-impl Default for NsfwGatingCountries {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -149,7 +144,7 @@ mod tests {
 
     #[test]
     fn refresh_reads_key_and_fails_open() {
-        let cache = NsfwGatingCountries::new();
+        let cache = NsfwGatingCountries::starting_at_default();
         assert!(cache.contains("de"));
         assert!(!cache.contains("xx"));
 
@@ -173,7 +168,7 @@ rust_vf:
 
     #[test]
     fn malformed_value_falls_back_whole_not_partial() {
-        let cache = NsfwGatingCountries::new();
+        let cache = NsfwGatingCountries::starting_at_default();
         cache.refresh_from(&engine(
             r#"
 rust_vf:

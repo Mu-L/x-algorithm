@@ -1,6 +1,6 @@
 use crate::models::candidate::{CandidateHelpers, PostCandidate};
 use crate::models::query::ScoredPostsQuery;
-use crate::params::RerankerHeadTag;
+use crate::params::{PhoenixExperimentOverrides, RerankerHeadTag};
 use rustc_hash::FxHashSet;
 use xai_candidate_pipeline::component_library::clients::phoenix_prediction_client::TOP_LOG_PROBS_NUM;
 use xai_geo_ip::zip_to_dma_code;
@@ -136,8 +136,21 @@ pub fn build_request_without_sequence_and_candidates(
         client_context: build_client_context(query),
         user_context: build_user_context(query),
         metadata: query.request_id.to_string(),
+        experiment_overrides: parse_experiment_overrides(
+            &query.params.get(PhoenixExperimentOverrides),
+        ),
         ..Default::default()
     }
+}
+
+pub fn parse_experiment_overrides(spec: &str) -> std::collections::HashMap<String, String> {
+    spec.split(';')
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            let (k, v) = (k.trim(), v.trim());
+            (!k.is_empty()).then(|| (k.to_string(), v.to_string()))
+        })
+        .collect()
 }
 
 pub fn build_prediction_request(

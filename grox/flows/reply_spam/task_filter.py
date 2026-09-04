@@ -94,7 +94,7 @@ class TaskSpamFilter(TaskFilterWithPost):
 
 
 class TaskCoordinatedSpamFilter(TaskFilterWithPost):
-    FOLLOWER_COUNT_THRESHOLD_FOR_SPAM_DETECTION = 1000
+    FOLLOWER_COUNT_THRESHOLD_FOR_SPAM_DETECTION = 5000
     FILTER_NAME = "coordinated_spam"
 
     @override

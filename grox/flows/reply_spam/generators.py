@@ -3,6 +3,7 @@ from grox.core.generators.stream_generator import StreamTaskGenerator
 from grox.flows.reply_spam.plan_spam_comment import PlanSpamComment
 from grox.flows.reply_spam.plan_reply_ranking import PlanReplyRanking
 from grox.flows.reply_spam.plan_coordinated_spam import PlanCoordinatedSpam
+from grox.flows.reply_spam.plan_multi_step_reply_spam import PlanMultiStepReplySpam
 from grox.core.registry import register
 from grox.flows.reply_spam.constants import (
     REPLY_RANKING,
@@ -19,6 +20,7 @@ class ReplyRankingTaskGenerator(StreamTaskGenerator):
         PlanReplyRanking.KEY,
         PlanSpamComment.KEY,
         PlanCoordinatedSpam.KEY,
+        PlanMultiStepReplySpam.KEY,
     }
 
     def _get_loader(self):
@@ -28,7 +30,11 @@ class ReplyRankingTaskGenerator(StreamTaskGenerator):
 @register
 class ReplyRankingRecoveryTaskGenerator(StreamTaskGenerator):
     TASK_GENERATOR_TYPE = REPLY_RANKING_RECOVERY
-    PLANS_TO_INJECT = {PlanReplyRanking.KEY, PlanSpamComment.KEY}
+    PLANS_TO_INJECT = {
+        PlanReplyRanking.KEY,
+        PlanSpamComment.KEY,
+        PlanMultiStepReplySpam.KEY,
+    }
 
     def _get_loader(self):
         return KafkaPostLoader(TOPIC_REPLY_RANKING_RECOVERY)

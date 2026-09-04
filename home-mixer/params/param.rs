@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-09-02T16:03:45Z
+// mirrored from config feature-switch defaults; last sync 2026-09-03T16:23:24Z
 use xai_feature_switches::param;
 
 param!(
@@ -624,6 +624,12 @@ param!(
     String,
     "rust_home_mixer_vm_ranker_cluster_id",
     "Experiment3"
+);
+param!(
+    PhoenixExperimentOverrides,
+    String,
+    "rust_home_mixer_phoenix_experiment_overrides",
+    ""
 );
 param!(
     VMRankerDppTheta,

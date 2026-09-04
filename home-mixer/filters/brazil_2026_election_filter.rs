@@ -19,6 +19,8 @@ use xai_candidate_pipeline::filter::{Filter, FilterResult};
 // We believe the account @ABR reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
 // We believe the account @ACMNETO_ reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
 // We believe the account @ALESILVAOFICIAL reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @BENICIODIAS reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
+// We believe the account @CARLOSSAMPAIO reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
 // We believe the account @CARLOSVIANA reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
 // We believe the account @CLECIACARVALHO1 reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
 // We believe the account @DAYSE reported by the candidate is not the candidate's actual account, so we are not currently filtering it.
@@ -42,7 +44,6 @@ use xai_candidate_pipeline::filter::{Filter, FilterResult};
 // @DANIELBRSOARES no live account found.
 // @DANILOBALASOFICIAL no live account found.
 // @DANILOTORRES100 no live account found.
-// @DECIOLIMAPT no live account found.
 // @DELEGADOEGUCHI no live account found.
 // @DEMAOLIVEIRA70 no live account found.
 // @DEPCELSOSABINO no live account found.
@@ -57,10 +58,12 @@ use xai_candidate_pipeline::filter::{Filter, FilterResult};
 // @FEDERALFELICIO no live account found.
 // @GERSONBURMANNIV no live account found.
 // @GSMA1986 no live account found.
+// @IGORRAYARN no live account found.
 // @JAIZAMETODIO no live account found.
 // @LEOMASCARENHASP no live account found.
 // @LUCIANALIPPI30 no live account found.
 // @LUCIANAOROZIMBO no live account found.
+// @LUIZPAULOCURVELO no live account found.
 // @MARCELOSILVACAMPINAS no live account found.
 // @MEUCANA669499 no live account found.
 // @MIRCOCORONETTI no live account found.
@@ -68,8 +71,8 @@ use xai_candidate_pipeline::filter::{Filter, FilterResult};
 // @NETOFEITOSA6891 no live account found.
 // @PATRICIACRIZANTO2 no live account found.
 // @PAULOMOURAOTO no live account found.
-// @PEDRONASSIF_RJ no live account found.
 // @PEDROPONCIOBE no live account found.
+// @PELUCIO_LUCA no live account found.
 // @POLICIALPAULOBASTOS no live account found.
 // @PRADOCORONEL no live account found.
 // @SUSANNAPFEDERAL no live account found.
@@ -84,6 +87,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
     FxHashSet::from_iter([
         // @madeleinelacsko
         9179462,
+        // @nanacachen
+        13258012,
         // @renildo
         14160928,
         // @renatoroseno
@@ -94,6 +99,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         15585094,
         // @soninhafrancine
         15768105,
+        // @AecioNeves
+        15828014,
         // @tatyanavaleria
         15908023,
         // @ClariceChacon
@@ -124,6 +131,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         20242549,
         // @marcelvanhattem
         21069302,
+        // @lgmbrasilia
+        21438601,
         // @nilvanferreira
         21571098,
         // @RafaellMilas
@@ -150,14 +159,20 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         25164669,
         // @pauloteixeira13
         25562342,
+        // @crismonteirosp
+        25841252,
         // @ManuelaDavila
         25858078,
         // @tomioyano
         26214420,
         // @CintyaMuniz
         26284058,
+        // @rodrigolimamdh
+        26498680,
         // @Biango
         26560559,
+        // @samiabomfim
+        27703690,
         // @profsta
         27883076,
         // @Jfelippeneto
@@ -184,6 +199,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         32160446,
         // @cirogomes
         33374761,
+        // @gabrielmagno_13
+        33717372,
         // @ticokuzma
         33759666,
         // @CristinaMel
@@ -202,6 +219,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         34618485,
         // @BetoRicha
         34665220,
+        // @marconiperillo
+        34790309,
         // @Donato_PT
         34795040,
         // @jooliveirapb
@@ -256,6 +275,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         38659819,
         // @LucasCalilGo
         38929561,
+        // @jandira_feghali
+        39116717,
         // @tourinhopedro
         39818820,
         // @murilogaldinopb
@@ -278,6 +299,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         41590536,
         // @profcassiano
         42106436,
+        // @KleberfreireAdv
+        42202762,
         // @RaoniMendes
         42284334,
         // @lcbusato
@@ -346,12 +369,16 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         46958570,
         // @DanielVilela15
         47371488,
+        // @RicMarques_RM
+        47387995,
         // @chrispuppi
         47418811,
         // @zeca_dirceu
         47461491,
         // @augustocury
         47529845,
+        // @policarpodf
+        47851105,
         // @Altineu
         47991805,
         // @fernandojordao
@@ -380,6 +407,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         49818264,
         // @ZimbaldiRafa
         49848446,
+        // @acmnetoba
+        49966078,
         // @ReginaldoLopes
         50088692,
         // @RicardoBarrosPP
@@ -450,6 +479,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         53073647,
         // @neyleprevost
         53163365,
+        // @DayseHansa
+        53473894,
         // @renanroto
         53544192,
         // @advandrebarros
@@ -458,6 +489,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         53719510,
         // @paulosalimmaluf
         53776600,
+        // @tatiroque
+        53911544,
         // @kikosilveira
         53998138,
         // @VINIANZILIERO
@@ -500,6 +533,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         55558067,
         // @stephanesjunior
         55607796,
+        // @eduardo_vidal
+        55686825,
         // @vitor_bicca
         56081072,
         // @Jrsantosrosa
@@ -584,6 +619,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         59855833,
         // @subgonzagamg
         59868993,
+        // @nandopinheiro22
+        60150569,
         // @marcio_motta
         60469505,
         // @anapaulagold
@@ -592,10 +629,14 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         60731692,
         // @Isquierdorio
         60805457,
+        // @andrerodini
+        60879681,
         // @luisbenambl
         60983130,
         // @CovattiFilho
         60994156,
+        // @FelicioRamuth
+        61119320,
         // @franzepiaui
         61190865,
         // @mariocaixa
@@ -650,6 +691,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         64460310,
         // @josenunes_ARI
         64482750,
+        // @hmecabo
+        64493005,
         // @helencabral13
         64493500,
         // @romulorippa
@@ -674,6 +717,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         66459281,
         // @miguelcoelhope
         66525428,
+        // @Brigadeiromma
+        66529851,
         // @VerGuilherme
         66704302,
         // @cantojocelito
@@ -746,6 +791,10 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         69020170,
         // @juliophilbert
         69073488,
+        // @MonicaSeixas
+        69370960,
+        // @esuplicy
+        69373037,
         // @juniorsinforma
         69874322,
         // @Gyselle_Soares
@@ -772,6 +821,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         71098452,
         // @lindberghfarias
         71310152,
+        // @FabioFayad
+        71345547,
         // @Daniel_PCdoB
         71545154,
         // @FaissalCalil
@@ -820,6 +871,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         74738674,
         // @VICENTINHOPT
         74762633,
+        // @MCrivella
+        74860967,
         // @agenorsantospa
         74867163,
         // @caetraven
@@ -878,6 +931,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         78714361,
         // @profdorinha
         79174387,
+        // @colattodeputado
+        79252957,
         // @gilbertoabramo
         80095058,
         // @michelschlemper
@@ -1024,6 +1079,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         93894534,
         // @tomazteixeira
         93958167,
+        // @DrRafaelFavatto
+        94115118,
         // @Obsevador
         94167900,
         // @coroneldavidms
@@ -1042,6 +1099,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         95526088,
         // @overissimo
         95621286,
+        // @deciolimasc
+        95699837,
         // @anapaulalimapt
         95939603,
         // @PROFTULIO
@@ -1156,6 +1215,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         117594353,
         // @ronaldornrn
         117801614,
+        // @patybenzaquem
+        118492432,
         // @ZeRicardoAM
         119079224,
         // @julio_cesar_pi
@@ -1226,6 +1287,10 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         129837652,
         // @alexandrebaldy
         130620293,
+        // @paulaodopt
+        131004593,
+        // @minc_rj
+        131286287,
         // @Miriampetrone
         132187525,
         // @depdelmasso
@@ -1256,10 +1321,14 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         137548563,
         // @tadeuveneri
         137919701,
+        // @sigageraldoluis
+        138172915,
         // @Eduardo_Cury
         138504441,
         // @Katiadiasjf
         139059131,
+        // @rodrigominotto
+        139809677,
         // @MerlongSolano
         140413929,
         // @raphaelsebba
@@ -1312,10 +1381,14 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         152900822,
         // @CezinhaNunes
         153131779,
+        // @AntonioTelesJr
+        153268918,
         // @RicardoCappelli
         153563550,
         // @JarbasFilho_
         155230905,
+        // @FabiolaMansur_
+        155564771,
         // @dacassia1
         155768056,
         // @sgtalexandre
@@ -1354,6 +1427,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         163546697,
         // @MariliaPFerrari
         163606193,
+        // @Ruicpimenta29
+        163831440,
         // @DepZeMilton
         163935204,
         // @wandnogueira
@@ -1408,12 +1483,18 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         168653875,
         // @TiberioLimeira
         168657354,
+        // @edbernasil
+        168814204,
         // @pepecollaco
         169158984,
+        // @DepEzequielRN
+        169180911,
         // @matheusmanholer
         170176086,
         // @pedrofrancez
         170188044,
+        // @depJeferson10
+        170505916,
         // @walterlfcaval
         170638771,
         // @wilsonsousajr
@@ -1470,6 +1551,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         185482131,
         // @rodfvale
         186331377,
+        // @Andiara1400
+        187726597,
         // @acarlosmendes
         190308328,
         // @pablomarcal
@@ -1480,6 +1563,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         192658045,
         // @pretagilsa
         193045733,
+        // @joeldaharpa
+        195423732,
         // @MarciaTaschetti
         198338329,
         // @JacksonAndre7
@@ -1562,6 +1647,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         235765762,
         // @euberlucas
         237071521,
+        // @lyneoliver
+        237497430,
         // @elzefacchinetti
         237562432,
         // @wildermorais
@@ -1602,7 +1689,7 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         255300173,
         // @wellington_luiz
         255637975,
-        // @depfrederico55
+        // @fredantunes_rs
         256499222,
         // @DelegadoJacovos
         257247983,
@@ -1630,6 +1717,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         267467458,
         // @alinegurgel_ap
         267981392,
+        // @depsebastiao
+        268318846,
         // @pastorflamarion
         269618056,
         // @ayres_jr
@@ -1648,6 +1737,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         274688443,
         // @netocoelhoo
         276794985,
+        // @DafneOrion
+        277586067,
         // @danealencar
         278126758,
         // @CostaMarinara
@@ -1722,6 +1813,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         310502840,
         // @TercioTinoco
         311616488,
+        // @paulobilynskyj1
+        311720533,
         // @katiabacelar
         312252804,
         // @depandresoares
@@ -1768,6 +1861,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         343512877,
         // @MarceloBelinati
         345512946,
+        // @SertanejoUFC
+        346580194,
         // @edusantosdf
         348089005,
         // @leilafonsecapb
@@ -1794,6 +1889,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         360649695,
         // @milkleileite
         365210575,
+        // @Thiagofreitaz
+        365552309,
         // @andresalineiro
         367519089,
         // @Ana_claudiapb
@@ -1882,8 +1979,12 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         487622592,
         // @LPescinelli
         492334281,
+        // @brunosouzasc
+        494268633,
         // @brauliolaranovo
         505339844,
+        // @caiocordeirotv
+        521514005,
         // @glauberbastos_
         527053144,
         // @MoisesSantosAc
@@ -1904,6 +2005,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         583377940,
         // @HelioWirbiski
         589375704,
+        // @adautosoutoms
+        596446640,
         // @AfonsoFlorence
         599427558,
         // @CiceroSimplicio
@@ -1914,12 +2017,16 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         608730390,
         // @MarioEsteves2
         610309440,
+        // @pastorhenriquev
+        617468983,
         // @MateusWesp
         618506366,
         // @elmanooficial
         626602522,
         // @fabiogov55
         630758039,
+        // @rosemodestoms
+        632251844,
         // @helenaduailibe_
         632737286,
         // @andrewleal2
@@ -1992,6 +2099,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1316758495,
         // @zecarlospt
         1325494376,
+        // @boettchermarcos
+        1339028060,
         // @CARLOSVALADARE7
         1356677952,
         // @D_GoretePereira
@@ -2012,6 +2121,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1532130170,
         // @Luiza_RibeiroG
         1544201047,
+        // @pedrocampospe
+        1546304018,
         // @natthpaccola
         1570635661,
         // @NegrahLima
@@ -2028,6 +2139,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1651852124,
         // @carlosedrsantos
         1685646356,
+        // @alcidesfernm
+        1687046911,
         // @Brandaveneno
         1710385291,
         // @chaficlays
@@ -2064,6 +2177,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2216639570,
         // @DepFederalMoses
         2217650233,
+        // @andredopradosp
+        2250697531,
         // @ZeniteRosa
         2289590857,
         // @BahMatteuss
@@ -2082,6 +2197,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2353403137,
         // @capitaoassis10
         2359974485,
+        // @marciolabre
+        2401917402,
         // @sheikhrodrigo
         2429206439,
         // @OmarAzizAm_
@@ -2114,6 +2231,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2580412784,
         // @anadogasoficial
         2583179096,
+        // @depheliolopes
+        2585621855,
         // @profsoniameire
         2604536294,
         // @depjorgesolla
@@ -2228,6 +2347,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         3092560931,
         // @rosangelawm
         3096479489,
+        // @ericgustavodf
+        3111776739,
         // @TeonilioBarba
         3119378914,
         // @otavio_camp
@@ -2244,6 +2365,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         3167874665,
         // @meire_cruvinel
         3205786257,
+        // @andre_fufuca
+        3254270357,
         // @Marcio_Honaiser
         3294107902,
         // @deputadopriante
@@ -2256,12 +2379,16 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         3335733075,
         // @drjeanfreire
         3342622547,
+        // @castrothulio
+        3354383374,
         // @PbnConcursos
         3357932231,
         // @brasleiroluc
         3366080079,
         // @moisesbrazpt
         3373574517,
+        // @caformigoni
+        3385089700,
         // @kleybe_morais
         3512854216,
         // @carmelonetobr
@@ -2292,6 +2419,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         4204580127,
         // @_AlessandroSE
         4250596815,
+        // @IrataAbreu
+        4309564575,
         // @DepLucianoMDB
         4350613047,
         // @josuelsantosbch
@@ -2302,6 +2431,10 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         4648157621,
         // @FofaBorges
         4775264669,
+        // @andrebrandao_rj
+        4820124735,
+        // @SandroFilhoBA
+        4836857632,
         // @ederborgesbr
         4871172143,
         // @emersonosasco
@@ -2340,6 +2473,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         724003686863740933,
         // @ViniciusFerroC
         726243481669242880,
+        // @emersonjarude
+        726777982115799040,
         // @lpbragancabr
         728281672731471873,
         // @brisabracchi13
@@ -2406,6 +2541,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         793261830072311812,
         // @RafaelMarcal33
         793424665431666688,
+        // @DaniloBalas
+        797527121879068672,
         // @iyagomedeiros
         799344884197064704,
         // @SocorroLac
@@ -2438,10 +2575,14 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         830144764360192002,
         // @ranallipf
         832322309436403712,
+        // @OseiasVarao
+        832603702737379329,
         // @depeniotatto
         834065907743854592,
         // @peumendonca23
         839127759955841024,
+        // @DaSilvaBelford
+        841440085035896834,
         // @GeneralGirao
         841700087143288832,
         // @viniciusaithsp
@@ -2476,6 +2617,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         885883830489554944,
         // @eucricielle
         887083474104049664,
+        // @paulosafederal
+        889464426222563328,
         // @brunopedralva
         889497158491271169,
         // @jonesmanoel_PE
@@ -2508,6 +2651,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         917373635605786624,
         // @cabojunioamaral
         917727546615193601,
+        // @NoemiaTiago
+        918524953561100288,
         // @wanderley_vieir
         921969720546480128,
         // @GuajajaraSonia
@@ -2542,6 +2687,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         958833209961254912,
         // @DepJorgeEverton
         959184931552464896,
+        // @ClaudioLCaivano
+        962035539133177858,
         // @Fbgg40
         963928182368980993,
         // @RafaelLustoza_
@@ -2624,10 +2771,14 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1000525959257378816,
         // @Izalourenca
         1000724258740473856,
+        // @tabataamaralsp
+        1001251931812220928,
         // @NatanSperafico
         1001476076466593792,
         // @zuccors
         1002182052341534720,
+        // @romulobuldrini
+        1002646368496865282,
         // @paparicobacchi
         1003614554394415104,
         // @jmtavaresz
@@ -2694,6 +2845,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1032017342937661441,
         // @vereadornetuno
         1032654017418211330,
+        // @SalvinoOliveir1
+        1034050960262418433,
         // @victorhugoforte
         1034054725107363840,
         // @RafagninLuciana
@@ -2718,6 +2871,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1040704983358955526,
         // @RenanSantosMBL
         1042601099566436352,
+        // @Daysehansa1
+        1044658383922638849,
         // @CavalarEmanuel
         1047079027696177152,
         // @gutopfonseca
@@ -2742,14 +2897,20 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1055640991200411648,
         // @cleitinhotmj
         1057231251743170562,
+        // @gilson__marques
+        1057602315664924673,
         // @delegadasheila
         1058010509256126464,
         // @mauricio_lindol
         1058341993372360705,
+        // @evandro_stacruz
+        1059551999258255361,
         // @veronicalima_ve
         1059554967600685058,
         // @pinheirinhomg
         1060134845043666945,
+        // @RuthVenceremos
+        1061207070412886016,
         // @giordanmes
         1062407588724252673,
         // @pluviapt
@@ -2770,6 +2931,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1069259896892329984,
         // @DelHelioBressan
         1070740683386957825,
+        // @wilkerleaods
+        1073662759009771520,
         // @marxbeltrao
         1074651587140902913,
         // @capalbertoneto
@@ -2802,6 +2965,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1084272914202091520,
         // @majorfabianadep
         1084712593292443648,
+        // @waltinhofoguete
+        1084870539666247682,
         // @wilkerbarretoam
         1085537170276958208,
         // @ArthurLira_
@@ -2866,6 +3031,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1098328459825287187,
         // @helio_ver
         1098911814824411137,
+        // @DelegadoFreitas
+        1098981858321276929,
         // @benesleocadiorn
         1099003656064643073,
         // @BlogdoSavio
@@ -2940,6 +3107,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1123714030391132161,
         // @emanuelvenzo17
         1124016358893785089,
+        // @AltairMoraessp
+        1124045706883473408,
         // @eunatashapoa
         1124140833547141121,
         // @GilbertoCattan1
@@ -2958,6 +3127,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1130259444326109184,
         // @fabiosilvadep
         1130509226281975814,
+        // @GersonSPires
+        1130572020901699585,
         // @gilmarpetrolina
         1131947049690255360,
         // @brunolessarj
@@ -3036,6 +3207,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1179012777366736899,
         // @delegadopalumbo
         1179437585275465729,
+        // @by_dzn
+        1184622911174389762,
         // @rickazzevedo
         1184969015023800320,
         // @PauloSussumu
@@ -3048,6 +3221,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1188827192999972865,
         // @BrunoZambelli3
         1191788412833075201,
+        // @rebecaromerobr
+        1192983475663638529,
         // @ProtetorAle
         1193938478456868865,
         // @thiagomedinamd
@@ -3126,8 +3301,12 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1227572253522526208,
         // @Alfredogaspar_
         1228008951813492739,
+        // @izadoradias29
+        1231267069762691072,
         // @BabaTupinamba
         1232082766071767045,
+        // @felipegomespsol
+        1232252941681221632,
         // @amandasalecosta
         1232788071218843648,
         // @queciareismbl
@@ -3178,12 +3357,16 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1244783574676627460,
         // @docporto
         1244954874049114113,
+        // @allinyserrao
+        1245187621007089666,
         // @vitimporto
         1246125973755609088,
         // @wmf_oficial
         1246641106391052288,
         // @GallinatiRaquel
         1246945909881044994,
+        // @RodrigoLivra
+        1247224255311499264,
         // @drluizovando
         1247287375803355136,
         // @robertlemosss
@@ -3250,12 +3433,16 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1262645801936879617,
         // @nise_dra
         1262944997118181385,
+        // @mikaelgringoPE
+        1265422039260762113,
         // @hana_ghassan
         1266449427985829888,
         // @professorarita_
         1266477339413749761,
         // @mariadoscamelos
         1267127677468753920,
+        // @Junacamara
+        1267549843586768896,
         // @aanaelisast
         1267822695195930630,
         // @ChirleyPankara
@@ -3368,6 +3555,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1310977778574032900,
         // @PabloSilvaLira
         1311620519935045632,
+        // @OdairTramontin
+        1311753908549750784,
         // @gedalvaumbauba
         1312771507601498112,
         // @cassymonteiro
@@ -3386,12 +3575,16 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1322213572953493505,
         // @PamelaGiedre
         1325859971905572869,
+        // @bfeministapsol
+        1329213002051149824,
         // @paulomelo_sa
         1330155785951866881,
         // @cabomeireles
         1330393555290951681,
         // @patisborges
         1330690808090124289,
+        // @_PastorDiego
+        1334311453592064000,
         // @bocalomoficial
         1335685798746845190,
         // @RoseanaSarneyM
@@ -3458,12 +3651,18 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1362442787988381696,
         // @boulosnat
         1366796662614749187,
+        // @NeidinhaSurui
+        1368009955912130561,
         // @_mapeoficial
         1372519763818217477,
+        // @NilmaSanches
+        1373064659817926661,
         // @rodrigoestacho
         1374044251475091457,
         // @PiauienseO
         1374436642375659530,
+        // @VitorioJrMG
+        1374502893533884421,
         // @FelipeAlecrimPE
         1375498458132537348,
         // @rodolfoms
@@ -3474,6 +3673,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1379025327314329608,
         // @DrLeviMelo1
         1379424037068234752,
+        // @fabiosilveirarn
+        1379583456812924935,
         // @marleipr
         1380366998488645636,
         // @depprofcleiton
@@ -3486,6 +3687,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1385208512955957250,
         // @SylvioMenicucci
         1385213373332213778,
+        // @PCO29antonio
+        1387843668053200897,
         // @depmarcionunes
         1390475281316646917,
         // @davibrandaobac1
@@ -3498,6 +3701,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1395784254269841408,
         // @DelegadoMarcus
         1396055754793230341,
+        // @renataseneofc
+        1399347605776314368,
         // @jusoaresft
         1400452986178981891,
         // @eduacostario
@@ -3516,6 +3721,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1409194659872653317,
         // @sauloportolivei
         1409385758838906882,
+        // @jrfreitasofc_
+        1409935535443951616,
         // @juniorferrari55
         1409990621536919555,
         // @rafaelsaraivasp
@@ -3548,6 +3755,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1434501105241792512,
         // @NFgoes
         1435915606541410305,
+        // @0xcarlosh
+        1437029285387243526,
         // @PeKelmon
         1437437148769226757,
         // @ScalcoDarlan
@@ -3566,6 +3775,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1445155253880594432,
         // @renatmirandarj
         1446451214292553733,
+        // @DayaneCruzPE
+        1446618743350730754,
         // @DanielaadvAP
         1446856314215337989,
         // @joelrodriguespi
@@ -3590,6 +3801,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1457433413028356098,
         // @fala_mafia
         1458089891795976202,
+        // @sargentoportuga
+        1458495272716222465,
         // @josecam01577970
         1459681826700673030,
         // @schumarker7
@@ -3604,6 +3817,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1463574028468330497,
         // @padovanidep
         1464329410115514369,
+        // @michelkourimbl
+        1464589158035468306,
         // @marinadomst
         1465395158103597065,
         // @amarianalescano
@@ -3612,6 +3827,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1468757430632865793,
         // @Maubmarcon
         1469007240279597067,
+        // @orenatomachado
+        1471286780737503232,
         // @joaquimroriznet
         1472329069027119107,
         // @LuizinhoMinas
@@ -3724,10 +3941,16 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1516033327941181447,
         // @DanielleDVale
         1516121393028644869,
+        // @thiagorodripa
+        1516560691410481156,
         // @andrebuenoofc
         1517514873105797120,
         // @ivanilsonrn
         1517576201338040321,
+        // @leandrobasson
+        1518652449371922433,
+        // @drpaulomedinamg
+        1518728271176871936,
         // @EDILSONLIMA70
         1518759485694779392,
         // @EdRaposo_
@@ -3780,6 +4003,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1530904551582220288,
         // @JadyelAlencarr
         1531271393219837956,
+        // @Jaimenunes_ap
+        1531655976008531968,
         // @ReginaluciaSi15
         1531933026208436231,
         // @eudonaneuma
@@ -3836,6 +4061,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1550186795333296128,
         // @julio_kuller
         1551652560951562240,
+        // @DepAndreAbdon
+        1552328294665781249,
         // @Gi_MonteiroRJ
         1553042102908502021,
         // @MissiasDias
@@ -3852,6 +4079,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1556676552674394114,
         // @KleberRosa50
         1556777705387032577,
+        // @josyjacob_
+        1556827882516893700,
         // @VitormoreiraCG
         1557086339740405761,
         // @ScaranteRenato
@@ -3890,10 +4119,14 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1575549757900132379,
         // @14luizfranca
         1575672365094440960,
+        // @PauloEchebarria
+        1576793388845760512,
         // @ProfAlexandreS
         1577470375272878083,
         // @Arnaldodeputado
         1578127734362046489,
+        // @Mariada67416358
+        1578375608878391296,
         // @TamirisPeixoto1
         1578450870127263757,
         // @CarlosValdevin6
@@ -3914,6 +4147,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1584299141550702593,
         // @andreadantasc
         1584527735686397952,
+        // @tcoronel_maia
+        1586016154262315009,
         // @rafandradembl
         1586192715137667072,
         // @CombatPatriota
@@ -3932,6 +4167,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1589336373101723649,
         // @JUNIORCESARLEI9
         1589412695664742401,
+        // @LuanNun43052492
+        1589645603616817154,
         // @pitypaguiar
         1589741307630690304,
         // @Marisaloboreal
@@ -3974,6 +4211,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1605547416366841856,
         // @MarinaCallega13
         1609042267095941123,
+        // @gutembergfrios
+        1610745043358187520,
         // @WickRyanAM
         1612178912947183620,
         // @SchiavoMaurilio
@@ -3988,6 +4227,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1612589448256016385,
         // @gersonzocchi1
         1612930692932837377,
+        // @oGabrielAzevedo
+        1612935067487145985,
         // @WaldenorPereira
         1613183981230366728,
         // @DiegoQuaqua
@@ -4024,12 +4265,16 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1634553908402987010,
         // @Dep_CoronelNeil
         1635697153979891712,
+        // @LucasAl29111516
+        1637240612620587013,
         // @AdrianaLeal2507
         1637963109573828608,
         // @adrianalmeidapt
         1638181881127612416,
         // @leticiaaguiarsp
         1638274776413134849,
+        // @Rogerio_Ulysses
+        1641171155540123655,
         // @edercostarj
         1642933716279328768,
         // @giuargolo
@@ -4042,6 +4287,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1648046380106104833,
         // @Alannleal_
         1651297457374887936,
+        // @felixsantosrn
+        1653188395324014593,
         // @CamilaGodoiSP
         1653466465855471617,
         // @MatiasSamuka
@@ -4094,6 +4341,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1708844117914972162,
         // @willianrochapr
         1709986969277624320,
+        // @osenhorsaldanha
+        1710320865517162496,
         // @francisco_arten
         1710430261932908545,
         // @hebertcsgyn
@@ -4176,6 +4425,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1777608369236271105,
         // @igorrayanrn
         1777621309335183360,
+        // @Dhe_paiv
+        1777901547629764608,
         // @juhliasantost
         1778077250908274688,
         // @OficialVanucci
@@ -4186,6 +4437,10 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1779913435825795072,
         // @BiaCoimbraSP
         1780537023859761153,
+        // @PedroNassifrj
+        1780805773603258368,
+        // @paulacoutinho65
+        1781108419853701120,
         // @CamillaGonda
         1781485235047174144,
         // @brunnomattospt
@@ -4204,6 +4459,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1789440263187771392,
         // @GuimaraesAlpha
         1790692252840243201,
+        // @EloyNhandewa
+        1791120964731744256,
         // @coronellrosses
         1793428861348167680,
         // @akarinaclaro
@@ -4224,6 +4481,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1801749578938564608,
         // @leorondonn13
         1803570674914426880,
+        // @igor_ooliveira1
+        1809003112658767872,
         // @gabi_bvnt
         1809421300433317892,
         // @ustramarcelo22
@@ -4298,6 +4557,10 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1859357204278542336,
         // @LusFelipeV68715
         1861380355875373056,
+        // @lucylulv
+        1863493161240133632,
+        // @_AnaHering
+        1864125622928187392,
         // @denistaveiradn
         1865917852424798208,
         // @joaopaulo_tprs
@@ -4366,6 +4629,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1904187270342574082,
         // @profeVinicius
         1906160472354873344,
+        // @ErikaGuerrieri
+        1906823280281174016,
         // @rodrigospada_
         1908175828417949697,
         // @MarinhoGui65411
@@ -4384,6 +4649,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1920469901136764928,
         // @ericafmissao26
         1922067675074727936,
+        // @joselaviola
+        1922378485412331522,
         // @daniele_carva
         1925558068206518272,
         // @MuriloM50730958
@@ -4398,10 +4665,14 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1932924340917710848,
         // @Camargo1Amanda
         1937005496398962688,
+        // @JulianaMontrios
+        1937336667356205056,
         // @prof_elson_sc
         1937980838299504644,
         // @marcioalvinosp
         1940410346411597824,
+        // @ArturdeFariasV
+        1941922310568443904,
         // @beto_vaz_
         1944257271942287360,
         // @jotabrandaoam
@@ -4412,6 +4683,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1953095258784579586,
         // @IgorMarquesBRA
         1957556152117653505,
+        // @lucasvenditeMS
+        1958412111752699904,
         // @NoronhaPro7153
         1958622002719182848,
         // @RubensAngiolett
@@ -4434,8 +4707,12 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1966489240566444033,
         // @edilsondamiaorr
         1970177461070528512,
+        // @joaoadolfo_14
+        1970451742430035968,
         // @Drfilipecm
         1972344363654037504,
+        // @delsmontanari
+        1973824020907700224,
         // @romulobraz_13
         1975026318975840257,
         // @DrManuelMarcos
@@ -4452,6 +4729,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1980794408141258752,
         // @drjuliostobbe
         1981365553173299200,
+        // @Kiko_Caputo
+        1982938414002647045,
         // @mazzei_fel47870
         1983280886067195904,
         // @marciaabrahaodf
@@ -4480,14 +4759,22 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         1997124812662362113,
         // @oleandroissa
         1998066982999212032,
+        // @Euberlucas14
+        1998418256953233408,
         // @profakellsilva
         1998797409712009216,
+        // @joaopiresrj
+        2000205916009074690,
         // @nelsongrasselli
         2002006532184281088,
+        // @rafoliver_pa
+        2005281365072449536,
         // @moisesbarboza
         2006965910309896192,
         // @alvarenga35289
         2007441310102523904,
+        // @coronelbusnello
+        2009066265156202496,
         // @RogerioChimi
         2010017755194589185,
         // @AntoniadeJessp
@@ -4496,6 +4783,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2010532868271816705,
         // @profraydf
         2010751427623497728,
+        // @PolianadoPsol
+        2010869406650245120,
         // @edinhosouzaaa
         2011825328793296896,
         // @Efreu_Quintana
@@ -4532,8 +4821,14 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2021639549625991168,
         // @henriqueduraesd
         2021718062261506049,
+        // @Jordambritosc
+        2022354011035222016,
         // @sophiafechinece
         2022429125399478273,
+        // @mateusquadrosms
+        2024092564014669824,
+        // @tulioteconta
+        2024178238990536704,
         // @NetoFeitos68916
         2026461466728292352,
         // @catarinanevespb
@@ -4550,10 +4845,14 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2029985728059559938,
         // @helen_vitaRJ
         2033587304795963392,
+        // @jeaninepresente
+        2034019355629846528,
         // @CidaCarvalhoSP
         2034086382705274880,
         // @EdneyBatalha
         2034242236678848513,
+        // @WickRyaAM
+        2034644862679547904,
         // @Fabio_x86
         2036151026986696704,
         // @MarcaoVivacqua
@@ -4580,6 +4879,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2041763427488608256,
         // @Grazypasqualeto
         2042058510536482816,
+        // @vivianegomesrn
+        2042331395725430784,
         // @CrisNavarroMIDH
         2043108953177899008,
         // @vanessacfortes
@@ -4600,6 +4901,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2047324463612485632,
         // @JoaoPaulo_2026
         2047395841715920897,
+        // @DeyconSP
+        2048379106517987328,
         // @VasconcellosCel
         2048607450593468416,
         // @PablodoMST
@@ -4612,6 +4915,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2049539394701262848,
         // @bia_pedagoga
         2049646600088117249,
+        // @enzodangelo_mbl
+        2049839952624492544,
         // @oalanmansurrj
         2049927296442658816,
         // @14DanielAguiar
@@ -4632,6 +4937,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2054954070083813376,
         // @mahmoudamer_rs
         2054974955603861504,
+        // @luizgamabsb
+        2055147146618302464,
         // @DelEduardoK
         2055437449740873728,
         // @glaucelima12
@@ -4640,6 +4947,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2056559848750276608,
         // @celmarcioasouza
         2056815030935416832,
+        // @CidaVillasBoas
+        2056824758201708544,
         // @RodolfoFiorucci
         2057456621865881600,
         // @brenobarcelos_
@@ -4666,6 +4975,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2060549322207375368,
         // @nicolasravipsol
         2061280727711289345,
+        // @Renatofonsecape
+        2061591502136983552,
         // @DrCrisVeloso
         2061889166779019264,
         // @DaversonMatos
@@ -4702,6 +5013,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2069869784972369920,
         // @Waltinhogo
         2070185289100775424,
+        // @candidotelesdr
+        2070216303479066624,
         // @Deborahzanchi_
         2070650915871240192,
         // @Delmariacorsato
@@ -4712,6 +5025,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2071779601815134208,
         // @angelaabukce
         2071949683736354816,
+        // @wilsonamigao
+        2071988583334862849,
         // @Drrafujr
         2074177828606652416,
         // @rogeriozabdalla
@@ -4772,6 +5087,8 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2080632627887734784,
         // @thiagocampeloof
         2081154349267345408,
+        // @erigreyce__
+        2081487029443940352,
         // @DanielSantanamc
         2081774169167974415,
         // @luismartarj
@@ -4792,12 +5109,16 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2082567723423342592,
         // @Clarianabr
         2082581908005806081,
+        // @joaogusmao_pt
+        2082766963659403264,
         // @karimeefayad
         2082897339065233409,
         // @barbararesende0
         2082924803145551872,
         // @guihenriquesc
         2082932165466058752,
+        // @odrlucasoficial
+        2083260564294295552,
         // @JHONNSOM70
         2083921524394700800,
         // @eliethdefatima
@@ -4830,8 +5151,12 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2085133776741437441,
         // @diegojejees
         2085201272139886592,
+        // @profyoshida
+        2085344308480049152,
         // @lucianoleitoa_
         2085736572914159616,
+        // @Virginiaenfer
+        2085739235093446656,
         // @profandersonfig
         2085812265509388288,
         // @nandovianapsol
@@ -4854,10 +5179,20 @@ static BRAZIL_2026_ELECTION_USER_IDS: LazyLock<FxHashSet<u64>> = LazyLock::new(|
         2089024802669334528,
         // @brunoscheid222
         2089064009643220993,
+        // @RafaGonzagaSP
+        2089736144921444352,
+        // @marciacandidata
+        2089837151844212736,
         // @SimonePimehb
         2090082297370312704,
+        // @RadmanGadiel
+        2090252697354067968,
         // @cabodaciolo33
         2091177221310345216,
+        // @danilosoaresce
+        2091948027967676416,
+        // @IuriMarque60kt
+        2092800629278126081,
     ])
 });
 
@@ -5045,7 +5380,7 @@ mod tests {
     #[test]
     fn hardcoded_list_is_non_empty() {
         assert!(!BRAZIL_2026_ELECTION_USER_IDS.is_empty());
-        assert_eq!(BRAZIL_2026_ELECTION_USER_IDS.len(), 2388);
+        assert_eq!(BRAZIL_2026_ELECTION_USER_IDS.len(), 2554);
     }
 
     #[test]

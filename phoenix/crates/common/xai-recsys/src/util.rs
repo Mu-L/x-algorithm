@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 X.AI Corp.
 use crate::model_config::ModelConfig;
-use arrow::array::{Array, AsArray, BooleanArray, Float32Array, Int32Array, Int64Array};
+use arrow::array::{
+    Array, AsArray, BooleanArray, FixedSizeListArray, Float32Array, Int32Array, Int64Array,
+};
 use arrow::ipc::reader::StreamReader;
 use half::f16;
 use lazy_static::lazy_static;
 use prometheus::{IntCounterVec, register_int_counter_vec};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::{SystemTime, UNIX_EPOCH};
 use xai_recsys_proto as pb;
@@ -24,6 +27,75 @@ lazy_static! {
         &["sequence", "status"]
     )
     .unwrap();
+}
+
+pub const WEB_CONV_FAKE_TWEET_ID: i64 = 4;
+
+pub fn conv_asset_map(ids: Option<&pb::ConvAssetIds>) -> HashMap<(i64, i64), i64> {
+    ids.filter(|ids| {
+        ids.asset_id.len() == ids.author_id.len()
+            && ids.asset_id.len() == ids.impressed_time_ms.len()
+    })
+    .map(|ids| {
+        (0..ids.asset_id.len())
+            .filter(|&i| ids.asset_id[i] > 0)
+            .map(|i| {
+                (
+                    (ids.author_id[i], ids.impressed_time_ms[i]),
+                    ids.asset_id[i],
+                )
+            })
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+pub fn is_web_conv_row(tweet_id: i64, has_conv_bit: bool) -> bool {
+    tweet_id == WEB_CONV_FAKE_TWEET_ID || has_conv_bit
+}
+
+pub fn conv_asset_ids_for_batch(
+    batch: &arrow::record_batch::RecordBatch,
+    map: &HashMap<(i64, i64), i64>,
+) -> Vec<i64> {
+    let n = batch.num_rows();
+    let mut out = vec![0i64; n];
+    if map.is_empty() {
+        return out;
+    }
+    let col_i64 = |name: &str| {
+        batch
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
+    };
+    let (Some(tweet_ids), Some(author_ids), Some(impressed_ms)) = (
+        col_i64("tweetId"),
+        col_i64("authorId"),
+        col_i64("impressedTimeMs"),
+    ) else {
+        return out;
+    };
+    let conv_bit = pb::ActionName::AdsWebConversion as usize;
+    let multi_hot = batch
+        .column_by_name("actionNameMultiHot")
+        .and_then(|c| c.as_any().downcast_ref::<FixedSizeListArray>())
+        .filter(|fsl| conv_bit < fsl.value_length() as usize);
+    let (bools, vocab) = match multi_hot {
+        Some(fsl) => (
+            fsl.values().as_any().downcast_ref::<BooleanArray>(),
+            fsl.value_length() as usize,
+        ),
+        None => (None, 0),
+    };
+    for (row, slot) in out.iter_mut().enumerate() {
+        let has_conv_bit = bools.is_some_and(|b| b.value(row * vocab + conv_bit));
+        if is_web_conv_row(tweet_ids.value(row), has_conv_bit)
+            && let Some(&asset_id) = map.get(&(author_ids.value(row), impressed_ms.value(row)))
+        {
+            *slot = asset_id;
+        }
+    }
+    out
 }
 
 pub fn record_sid_coverage(sequence: &str, present: u64, count: u64) {
@@ -1546,6 +1618,78 @@ impl InputBuffer {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn conv_asset_ids_for_batch_predicate_and_keys() {
+        use arrow::array::{ArrayRef, BooleanArray, FixedSizeListArray, Int64Array};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let rows = [
+            (11, 21, 111_000, false),
+            (WEB_CONV_FAKE_TWEET_ID, 7, 1_000, false),
+            (555, 8, 2_000, true),
+            (WEB_CONV_FAKE_TWEET_ID, 7, 3_000, false),
+            (WEB_CONV_FAKE_TWEET_ID, 7, 4_000, false),
+        ];
+        let vocab = 256usize;
+        let conv_bit = pb::ActionName::AdsWebConversion as usize;
+        assert!(conv_bit < vocab);
+        let mut bits = vec![false; rows.len() * vocab];
+        for (i, r) in rows.iter().enumerate() {
+            bits[i * vocab + conv_bit] = r.3;
+        }
+        let multi_hot = FixedSizeListArray::new(
+            Arc::new(Field::new("item", DataType::Boolean, true)),
+            vocab as i32,
+            Arc::new(BooleanArray::from(bits)),
+            None,
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("tweetId", DataType::Int64, false),
+            Field::new("authorId", DataType::Int64, false),
+            Field::new("impressedTimeMs", DataType::Int64, false),
+            Field::new("actionNameMultiHot", multi_hot.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )) as ArrayRef,
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+                Arc::new(multi_hot),
+            ],
+        )
+        .unwrap();
+
+        let ids = pb::ConvAssetIds {
+            impressed_time_ms: vec![111_000, 1_000, 2_000, 4_000],
+            author_id: vec![21, 7, 8, 7],
+            asset_id: vec![99, 42, 9, 0],
+        };
+        let map = conv_asset_map(Some(&ids));
+        assert_eq!(map.len(), 3, "asset_id 0 windows are dropped from the map");
+        assert_eq!(conv_asset_ids_for_batch(&batch, &map), vec![0, 42, 9, 0, 0]);
+
+        let ragged = pb::ConvAssetIds {
+            impressed_time_ms: vec![1_000],
+            author_id: vec![7, 8],
+            asset_id: vec![42],
+        };
+        assert!(conv_asset_map(Some(&ragged)).is_empty());
+        assert!(conv_asset_map(None).is_empty());
+        assert_eq!(
+            conv_asset_ids_for_batch(&batch, &HashMap::new()),
+            vec![0; 5]
+        );
+    }
     use super::*;
     use crate::feature_config::categorical_feature::{
         PRODUCT_SURFACE_SEQ, PRODUCT_SURFACE_SEQ_COLUMN, PRODUCT_SURFACE_SEQ_NAME,

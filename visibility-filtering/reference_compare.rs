@@ -200,6 +200,7 @@ fn group_diffs(diffs: &[Diff]) -> Vec<Group<'_>> {
                 });
                 groups.len() - 1
             });
+        #[expect(clippy::indexing_slicing, reason = "at indexes a group already pushed")]
         groups[at].tweet_ids.push(diff.tweet_id);
     }
     groups
@@ -253,19 +254,21 @@ pub(crate) fn chunk_lines(
         .to_string()
         .len();
     let budget = LINE_BUDGET_BYTES.saturating_sub(header_len);
-    let mut pages: Vec<Vec<serde_json::Value>> = vec![Vec::new()];
+    let mut pages: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut current: Vec<serde_json::Value> = Vec::new();
     let mut used = 0;
     for group in group_diffs(diffs) {
         for slice in group_slices(&group, budget) {
             let cost = slice.to_string().len() + 1;
-            if used + cost > budget && pages.last().is_some_and(|page| !page.is_empty()) {
-                pages.push(Vec::new());
+            if used + cost > budget && !current.is_empty() {
+                pages.push(std::mem::take(&mut current));
                 used = 0;
             }
             used += cost;
-            pages.last_mut().expect("pages is never empty").push(slice);
+            current.push(slice);
         }
     }
+    pages.push(current);
     let total = pages.len();
     pages
         .into_iter()
@@ -392,7 +395,10 @@ impl ReferenceCompareHarness {
             harness.emit(safety_level, &counts);
             if !diffs.is_empty() {
                 for line in chunk_lines(&context, &batch_id(), &diffs) {
-                    println!("{line}");
+                    #[expect(clippy::print_stdout, reason = "stdout is the diff sink")]
+                    {
+                        println!("{line}");
+                    }
                 }
             }
         });

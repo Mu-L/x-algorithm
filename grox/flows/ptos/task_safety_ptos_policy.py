@@ -97,7 +97,10 @@ class TaskSafetyPtosPolicyDetection(TaskWithPost):
                 violation.safetyPolicy = await cls.cross_validator.validate(
                     violation.category, post, policy
                 )
-            elif violation.category == SafetyPolicyCategory.ViolentMedia:
+            elif violation.category in (
+                SafetyPolicyCategory.ViolentMedia,
+                SafetyPolicyCategory.IllegalAndRegulatedBehaviors,
+            ):
                 policy = await active_classifier.classify_policy_for_violation(
                     post, violation
                 )

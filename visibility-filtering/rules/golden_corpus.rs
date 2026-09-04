@@ -26,7 +26,7 @@ struct Case {
 
 #[test]
 fn golden_corpus_pins_policy_verdicts() {
-    let rule_engine = RuleEngine::new();
+    let rule_engine = RuleEngine::for_tests();
     let mut failures = Vec::new();
     for case in cases() {
         let verdict = rule_engine.evaluate(case.level, &case.viewer, &case.candidate);
@@ -54,7 +54,7 @@ fn golden_corpus_pins_policy_verdicts() {
 
 #[test]
 fn every_wired_rule_decides_a_corpus_case() {
-    let rule_engine = RuleEngine::new();
+    let rule_engine = RuleEngine::for_tests();
     let wired: BTreeSet<&'static str> = [FilterAll, TimelineHome, TimelineHomeRecommendations]
         .into_iter()
         .flat_map(|level| rule_engine.wired_rule_names(level))
@@ -147,9 +147,12 @@ fn stale_candidate() -> HydratedTweetCandidate {
 }
 
 fn takedown_candidate(reason: TakedownReason) -> HydratedTweetCandidate {
-    let mut features = TweetFeatures::default();
-    features.takedown.reasons = vec![reason];
-    candidate().with_tweet_features(features).build()
+    candidate()
+        .with_tweet_features(TweetFeatures {
+            takedown_reasons: vec![reason],
+            ..Default::default()
+        })
+        .build()
 }
 
 fn exclusive_candidate(viewer_super_follows_author: bool) -> HydratedTweetCandidate {
@@ -233,6 +236,54 @@ fn baseline_cases() -> Vec<Case> {
             level: TimelineHome,
             viewer: logged_out_viewer(),
             candidate: candidate().build(),
+            expected_action: Allow,
+            expected_decided_by: None,
+        },
+        Case {
+            name: "home_allows_egregious_nsfw_tweet_label",
+            level: TimelineHome,
+            viewer: viewer(VIEWER_ID),
+            candidate: labeled(SafetyLabelType::EGREGIOUS_NSFW),
+            expected_action: Allow,
+            expected_decided_by: None,
+        },
+        Case {
+            name: "recommendations_allow_egregious_nsfw_tweet_label",
+            level: TimelineHomeRecommendations,
+            viewer: viewer(VIEWER_ID),
+            candidate: labeled(SafetyLabelType::EGREGIOUS_NSFW),
+            expected_action: Allow,
+            expected_decided_by: None,
+        },
+        Case {
+            name: "home_allows_egregious_nsfw_user_label",
+            level: TimelineHome,
+            viewer: viewer(VIEWER_ID),
+            candidate: user_labeled(LabelValue::EGREGIOUS_NSFW),
+            expected_action: Allow,
+            expected_decided_by: None,
+        },
+        Case {
+            name: "recommendations_allow_egregious_nsfw_user_label",
+            level: TimelineHomeRecommendations,
+            viewer: viewer(VIEWER_ID),
+            candidate: user_labeled(LabelValue::EGREGIOUS_NSFW),
+            expected_action: Allow,
+            expected_decided_by: None,
+        },
+        Case {
+            name: "home_allows_recommendations_blacklist_user_label",
+            level: TimelineHome,
+            viewer: viewer(VIEWER_ID),
+            candidate: user_labeled(LabelValue::RECOMMENDATIONS_BLACKLIST),
+            expected_action: Allow,
+            expected_decided_by: None,
+        },
+        Case {
+            name: "recommendations_allow_recommendations_blacklist_user_label",
+            level: TimelineHomeRecommendations,
+            viewer: viewer(VIEWER_ID),
+            candidate: user_labeled(LabelValue::RECOMMENDATIONS_BLACKLIST),
             expected_action: Allow,
             expected_decided_by: None,
         },
@@ -523,6 +574,52 @@ fn tweet_shape_cases() -> Vec<Case> {
             }),
             expected_action: Drop(FilteredReason::UnspecifiedReason),
             expected_decided_by: Some("DropLocalLawsTakendownPostRule"),
+        },
+        Case {
+            name: "legal_takedown_worldwide_drops_for_us_viewer",
+            level: TimelineHome,
+            viewer: viewer_in_country("us"),
+            candidate: takedown_candidate(TakedownReason::LegalRequest {
+                country_code: "xx".to_string(),
+            }),
+            expected_action: Drop(FilteredReason::UnspecifiedReason),
+            expected_decided_by: Some("DropLegalTakendownPostRule"),
+        },
+        Case {
+            name: "legal_takedown_worldwide_drops_without_viewer_country",
+            level: TimelineHome,
+            viewer: viewer(VIEWER_ID),
+            candidate: takedown_candidate(TakedownReason::LegalRequest {
+                country_code: "xx".to_string(),
+            }),
+            expected_action: Drop(FilteredReason::UnspecifiedReason),
+            expected_decided_by: Some("DropLegalTakendownPostRule"),
+        },
+        Case {
+            name: "local_laws_takedown_worldwide_drops_for_any_viewer",
+            level: TimelineHome,
+            viewer: viewer_in_country("us"),
+            candidate: takedown_candidate(TakedownReason::BystanderReport {
+                country_code: "xx".to_string(),
+            }),
+            expected_action: Drop(FilteredReason::UnspecifiedReason),
+            expected_decided_by: Some("DropLocalLawsTakendownPostRule"),
+        },
+        Case {
+            name: "dmca_takedown_drops_for_any_viewer",
+            level: TimelineHome,
+            viewer: viewer(VIEWER_ID),
+            candidate: takedown_candidate(TakedownReason::Dmca),
+            expected_action: Drop(FilteredReason::UnspecifiedReason),
+            expected_decided_by: Some("DropLegalTakendownPostRule"),
+        },
+        Case {
+            name: "dmca_takedown_allows_author",
+            level: TimelineHome,
+            viewer: author_viewer(),
+            candidate: takedown_candidate(TakedownReason::Dmca),
+            expected_action: Allow,
+            expected_decided_by: None,
         },
     ]
 }

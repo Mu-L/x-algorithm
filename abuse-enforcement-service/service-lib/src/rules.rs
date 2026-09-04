@@ -670,6 +670,7 @@ mod tests {
         for id in [
             "user_in_allowlist",
             "user_not_found",
+            "very_high_follower_count",
             "high_follower_count",
             "pagerank_skipped",
         ] {
@@ -679,6 +680,17 @@ mod tests {
                 user.rule_ids
             );
         }
+        let pos = |id: &str| {
+            user.rule_ids
+                .iter()
+                .position(|r| r == id)
+                .unwrap_or_else(|| panic!("user pipeline missing {id:?}"))
+        };
+        assert!(
+            pos("very_high_follower_count") < pos("high_follower_count"),
+            "very_high_follower_count must precede high_follower_count; got {:?}",
+            user.rule_ids
+        );
         for id in [
             "post_in_allowlist",
             "user_in_allowlist",
@@ -1267,6 +1279,43 @@ rules:
         assert_eq!(
             decide_with(&rules, &f).unwrap(),
             Decision::Skip("high_follower_count".into())
+        );
+    }
+
+    #[test]
+    fn baked_in_user_pipeline_splits_follower_bands_at_the_ceiling() {
+        let rules = RulesCache::new().resolve(EntityType::User, None);
+        let mut f = facts_with_requested_action();
+        f.cred_mut().follower_count = Some(250_000);
+        assert_eq!(
+            decide_with(&rules, &f).unwrap(),
+            Decision::Skip("very_high_follower_count".into())
+        );
+        f.cred_mut().follower_count = Some(50_000);
+        assert_eq!(
+            decide_with(&rules, &f).unwrap(),
+            Decision::Skip("high_follower_count".into())
+        );
+        f.cred_mut().follower_count = Some(500);
+        assert_ne!(
+            decide_with(&rules, &f).unwrap(),
+            Decision::Skip("high_follower_count".into())
+        );
+        assert_ne!(
+            decide_with(&rules, &f).unwrap(),
+            Decision::Skip("very_high_follower_count".into())
+        );
+    }
+
+    #[test]
+    fn baked_in_user_ceiling_ignores_skip_author_credibility_prechecks() {
+        let rules = RulesCache::new().resolve(EntityType::User, None);
+        let mut f = facts_with_requested_action();
+        f.cred_mut().follower_count = Some(250_000);
+        f.score.skip_author_credibility_prechecks = true;
+        assert_eq!(
+            decide_with(&rules, &f).unwrap(),
+            Decision::Skip("very_high_follower_count".into())
         );
     }
 

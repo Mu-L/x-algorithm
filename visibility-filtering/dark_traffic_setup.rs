@@ -181,6 +181,7 @@ pub fn resolve_layer() -> DarkLayer {
     let domain = staging_tls_domain(&dc);
     info!(domain, "dark_traffic: enabled");
 
+    #[expect(clippy::expect_used, reason = "startup fail-fast: TLS is required")]
     let factory = XdsChannelFactory::new(
         TlsMode::mtls_from_env()
             .expect("S2S TLS config required")

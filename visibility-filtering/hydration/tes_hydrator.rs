@@ -1,8 +1,7 @@
 use crate::hydration::batch::TweetHydrationBatch;
 use crate::hydration::metrics::{record_batch_size, timed_keyed_rpc, timed_results};
 use crate::models::{
-    CoreFeature, MediaFeature, NsfwFeature, TakedownFeature, TweetCandidateInput, TweetFeatures,
-    TweetId,
+    CoreFeature, MediaFeature, NsfwFeature, TweetCandidateInput, TweetFeatures, TweetId,
 };
 use crate::rules::SafetyLevel;
 use std::collections::HashMap;
@@ -24,23 +23,9 @@ pub(crate) struct TweetHydration {
     pub(crate) community: TweetHydrationBatch<i64>,
     pub(crate) nsfw_user: TweetHydrationBatch<bool>,
     pub(crate) nsfw_admin: TweetHydrationBatch<bool>,
-    pub(crate) has_takedown: TweetHydrationBatch<bool>,
     pub(crate) takedown_reasons: TweetHydrationBatch<Vec<TakedownReason>>,
     pub(crate) edit_control: TweetHydrationBatch<EditControl>,
     pub(crate) media: TweetHydrationBatch<MediaFeature>,
-}
-
-impl TweetHydration {
-    pub(crate) fn failed_entries(&self) -> usize {
-        self.nullcast.failed_count()
-            + self.community.failed_count()
-            + self.nsfw_user.failed_count()
-            + self.nsfw_admin.failed_count()
-            + self.has_takedown.failed_count()
-            + self.takedown_reasons.failed_count()
-            + self.edit_control.failed_count()
-            + self.media.failed_count()
-    }
 }
 
 impl TesHydrator {
@@ -83,7 +68,6 @@ impl TesHydrator {
             community,
             nsfw_user,
             nsfw_admin,
-            has_takedown,
             takedown_reasons,
             edit_control,
             media_entities,
@@ -122,14 +106,6 @@ impl TesHydrator {
             ),
             timed_results(
                 CLIENT,
-                "get_has_takedown",
-                safety_level,
-                &candidate_count_by_key,
-                CLIENT_TIMEOUT,
-                self.tes_client.get_has_takedown(raw_ids.clone()),
-            ),
-            timed_results(
-                CLIENT,
                 "get_takedown_reasons",
                 safety_level,
                 &candidate_count_by_key,
@@ -159,7 +135,6 @@ impl TesHydrator {
             community: community.map_keys(TweetId),
             nsfw_user: nsfw_user.map_keys(TweetId),
             nsfw_admin: nsfw_admin.map_keys(TweetId),
-            has_takedown: has_takedown.map_keys(TweetId),
             takedown_reasons: takedown_reasons.map_keys(TweetId),
             edit_control: edit_control.map_keys(TweetId),
             media: media_entities.map_keys(TweetId).map(media_feature),
@@ -202,10 +177,7 @@ fn build_tweet_features(
     let media = tweet_keyed.media.get_or_default(&id);
     let is_nullcast = tweet_keyed.nullcast.get(&id).copied().unwrap_or(false);
     let is_community_tweet = tweet_keyed.community.get(&id).is_some();
-    let takedown = TakedownFeature {
-        applied: tweet_keyed.has_takedown.get(&id).copied().unwrap_or(false),
-        reasons: tweet_keyed.takedown_reasons.get_or_default(&id),
-    };
+    let takedown_reasons = tweet_keyed.takedown_reasons.get_or_default(&id);
     let nsfw = NsfwFeature {
         user: tweet_keyed.nsfw_user.get(&id).copied().unwrap_or(false),
         admin: tweet_keyed.nsfw_admin.get(&id).copied().unwrap_or(false),
@@ -218,10 +190,9 @@ fn build_tweet_features(
             core: CoreFeature {
                 text: core_data.text.clone(),
                 source_tweet_id: core_data.source_tweet_id,
-                created_at_secs: core_data.created_at_secs,
             },
             media,
-            takedown,
+            takedown_reasons,
             nsfw,
             is_nullcast,
             is_community_tweet,
@@ -480,7 +451,6 @@ mod tests {
 
         let f = &features[&TweetId(10)];
         assert!(f.core.text.is_empty());
-        assert_eq!(f.core.created_at_secs, None);
         assert!(!f.media.has_media);
     }
 }

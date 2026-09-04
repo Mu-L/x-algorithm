@@ -1,13 +1,43 @@
 use crate::models::{
-    AuthorFeatures, HydratedTweetCandidate, SafetyLabel, SafetyLabelMap, SafetyLabelType,
-    TweetFeatures, UserLabelSet, Viewer, ViewerAuthorRelationship, ViewerFeatures,
+    AuthorFeatures, HydratedTweetCandidate, NsfwFeature, SafetyLabelMap, SafetyLabelType,
+    TweetFeatures, UserLabelSet, VfAction, Viewer, ViewerAuthorRelationship, ViewerFeatures,
 };
-use std::collections::{HashMap, HashSet};
+use crate::rules::rule_spec::RuleSpec;
+use crate::rules::test_context;
+use std::collections::HashSet;
+use xai_visibility_filtering::models::FilteredReason;
 use xai_x_thrift::user_labels::LabelValue;
 
 const TWEET_ID: u64 = 1;
 const AUTHOR_ID: u64 = 100;
 pub(crate) const VIEWER_ID: u64 = 999;
+
+pub(super) fn assert_drops(
+    spec: &RuleSpec,
+    viewer: &ViewerFeatures,
+    candidate: &HydratedTweetCandidate,
+    expected: &FilteredReason,
+) {
+    let action = spec.evaluate(&test_context(viewer, candidate));
+    assert!(
+        matches!(&action, VfAction::Drop(reason) if reason == expected),
+        "{} should drop with {expected:?}, got {action:?}",
+        spec.name()
+    );
+}
+
+pub(super) fn assert_allows(
+    spec: &RuleSpec,
+    viewer: &ViewerFeatures,
+    candidate: &HydratedTweetCandidate,
+) {
+    let action = spec.evaluate(&test_context(viewer, candidate));
+    assert!(
+        matches!(action, VfAction::Allow),
+        "{} should allow, got {action:?}",
+        spec.name()
+    );
+}
 
 pub(crate) fn viewer(id: u64) -> ViewerFeatures {
     ViewerFeatures {
@@ -41,14 +71,14 @@ pub(crate) fn candidate() -> CandidateBuilder {
             author_id: AUTHOR_ID,
             ..Default::default()
         },
-        labels: HashMap::new(),
+        labels: HashSet::new(),
         user_labels: HashSet::new(),
     }
 }
 
 pub(crate) struct CandidateBuilder {
     candidate: HydratedTweetCandidate,
-    labels: HashMap<SafetyLabelType, SafetyLabel>,
+    labels: HashSet<SafetyLabelType>,
     user_labels: HashSet<LabelValue>,
 }
 
@@ -64,7 +94,7 @@ impl CandidateBuilder {
     }
 
     pub(crate) fn with_label(mut self, label: SafetyLabelType) -> Self {
-        self.labels.insert(label, SafetyLabel::default());
+        self.labels.insert(label);
         self
     }
 
@@ -113,4 +143,49 @@ impl CandidateBuilder {
         }
         candidate
     }
+}
+
+pub(super) fn nsfw_flag_media_candidates() -> [HydratedTweetCandidate; 4] {
+    let author_user = candidate()
+        .with_media()
+        .with_author_features(AuthorFeatures {
+            is_nsfw_user: true,
+            ..Default::default()
+        })
+        .build();
+    let tweet_user = candidate()
+        .with_tweet_features(TweetFeatures {
+            nsfw: NsfwFeature {
+                user: true,
+                admin: false,
+            },
+            ..Default::default()
+        })
+        .with_media()
+        .build();
+    let tweet_admin = candidate()
+        .with_tweet_features(TweetFeatures {
+            nsfw: NsfwFeature {
+                user: false,
+                admin: true,
+            },
+            ..Default::default()
+        })
+        .with_media()
+        .build();
+    let both = candidate()
+        .with_author_features(AuthorFeatures {
+            is_nsfw_admin: true,
+            ..Default::default()
+        })
+        .with_tweet_features(TweetFeatures {
+            nsfw: NsfwFeature {
+                user: true,
+                admin: false,
+            },
+            ..Default::default()
+        })
+        .with_media()
+        .build();
+    [author_user, tweet_user, tweet_admin, both]
 }

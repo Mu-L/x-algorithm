@@ -19,13 +19,12 @@ use crate::rules::SafetyLevel;
 use crate::safety_label_source::SafetyLabelSource;
 use batch::TweetHydrationBatch;
 use exclusive_content_hydrator::ExclusiveContentHydrator;
-pub(crate) use fallback_cache::FallbackCacheMode;
+use fallback_cache::FallbackCache;
 use gizmoduck_hydrator::GizmoduckAuthorHydrator;
 use safety_label_hydrator::{SafetyLabelHydration, SafetyLabelHydrator};
 use socialgraph_hydrator::SocialgraphHydrator;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 use tes_hydrator::TesHydrator;
 use viewer_hydrator::ViewerHydrator;
 use xai_core_entities::gizmoduck_client::GizmoduckClient;
@@ -135,7 +134,7 @@ impl HydrationPipeline {
         gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync>,
         socialgraph_client: Arc<dyn SocialgraphClient + Send + Sync>,
         safety_label_source: Arc<SafetyLabelSource>,
-        fallback_cache_mode: FallbackCacheMode,
+        fallback_cache: Option<FallbackCache<AuthorId, AuthorFeatures>>,
     ) -> Self {
         Self {
             viewer_hydrator: ViewerHydrator {
@@ -146,7 +145,7 @@ impl HydrationPipeline {
             },
             gizmoduck_author_hydrator: GizmoduckAuthorHydrator::new(
                 GizmoduckLookup::new(gizmoduck_client),
-                fallback_cache_mode,
+                fallback_cache,
             ),
             socialgraph_hydrator: SocialgraphHydrator {
                 sg_client: socialgraph_client.clone(),
@@ -173,100 +172,27 @@ impl HydrationPipeline {
             .viewer_hydrator
             .hydrate(viewer_id, country_code, safety_level);
         let candidate_hydration = async {
-            let start = Instant::now();
             let tweet_ids: Vec<TweetId> = raw_candidates.iter().map(|c| c.tweet_id).collect();
             let independent_group = async {
                 tokio::join!(
-                    async {
-                        let hydrator_start = Instant::now();
-                        let result = self
-                            .safety_label_hydrator
-                            .hydrate(&tweet_ids, safety_level)
-                            .await;
-                        tracing::info!(
-                            hydrator = "SafetyLabelHydrator",
-                            result_count = result.label_types.len(),
-                            latency_ms = hydrator_start.elapsed().as_millis() as u64,
-                            "Hydrator completed"
-                        );
-                        result
-                    },
-                    async {
-                        let hydrator_start = Instant::now();
-                        let result = self
-                            .tes_hydrator
-                            .hydrate_tweets(&tweet_ids, safety_level)
-                            .await;
-                        tracing::info!(
-                            hydrator = "TesHydrator.tweets",
-                            result_count = result.media.len(),
-                            failed_entries = result.failed_entries(),
-                            latency_ms = hydrator_start.elapsed().as_millis() as u64,
-                            "Hydrator completed"
-                        );
-                        result
-                    },
-                    async {
-                        let hydrator_start = Instant::now();
-                        let result = self
-                            .exclusive_content_hydrator
-                            .hydrate(&tweet_ids, viewer, safety_level)
-                            .await;
-                        tracing::info!(
-                            hydrator = "ExclusiveContentHydrator",
-                            result_count = result.len(),
-                            latency_ms = hydrator_start.elapsed().as_millis() as u64,
-                            "Hydrator completed"
-                        );
-                        result
-                    },
+                    self.safety_label_hydrator.hydrate(&tweet_ids, safety_level),
+                    self.tes_hydrator.hydrate_tweets(&tweet_ids, safety_level),
+                    self.exclusive_content_hydrator
+                        .hydrate(&tweet_ids, viewer, safety_level),
                 )
             };
 
             let author_hop = async {
-                let pure_core_start = Instant::now();
                 let core_datas = self
                     .tes_hydrator
                     .fetch_pure_core(&tweet_ids, safety_level)
                     .await;
-                tracing::info!(
-                    hydrator = "TesHydrator.pure_core",
-                    result_count = core_datas.len(),
-                    latency_ms = pure_core_start.elapsed().as_millis() as u64,
-                    "Hydrator completed"
-                );
                 let candidates = resolve_candidates(raw_candidates, &core_datas);
                 let (author_features, relationships) = tokio::join!(
-                    async {
-                        let hydrator_start = Instant::now();
-                        let result = self
-                            .gizmoduck_author_hydrator
-                            .hydrate(&candidates, safety_level)
-                            .await;
-                        tracing::info!(
-                            hydrator = "GizmoduckAuthorHydrator",
-                            result_count = result.len(),
-                            failed_count = result.failed_count(),
-                            latency_ms = hydrator_start.elapsed().as_millis() as u64,
-                            "Hydrator completed"
-                        );
-                        result
-                    },
-                    async {
-                        let hydrator_start = Instant::now();
-                        let result = self
-                            .socialgraph_hydrator
-                            .hydrate(&candidates, viewer, safety_level)
-                            .await;
-                        tracing::info!(
-                            hydrator = "SocialgraphHydrator",
-                            result_count = result.len(),
-                            failed_count = result.failed_count(),
-                            latency_ms = hydrator_start.elapsed().as_millis() as u64,
-                            "Hydrator completed"
-                        );
-                        result
-                    },
+                    self.gizmoduck_author_hydrator
+                        .hydrate(&candidates, safety_level),
+                    self.socialgraph_hydrator
+                        .hydrate(&candidates, viewer, safety_level),
                 );
                 (core_datas, candidates, author_features, relationships)
             };
@@ -296,11 +222,6 @@ impl HydrationPipeline {
             };
             let hydrated_candidates = features.assemble(&candidates);
 
-            tracing::info!(
-                candidate_count = hydrated_candidates.len(),
-                total_latency_ms = start.elapsed().as_millis() as u64,
-                "All hydrators completed"
-            );
             (hydrated_candidates, label_response)
         };
 

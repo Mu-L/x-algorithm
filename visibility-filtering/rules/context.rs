@@ -1,11 +1,9 @@
 use crate::models::{HydratedTweetCandidate, SafetyLabelType, ViewerFeatures};
 use crate::params::NsfwGatingCountries;
-use crate::rules::registry::SafetyLevel;
 use xai_core_entities::entities::TakedownReason;
 use xai_x_thrift::user_labels::LabelValue;
 
 pub struct RuleContext<'a> {
-    safety_level: SafetyLevel,
     viewer: &'a ViewerFeatures,
     candidate: &'a HydratedTweetCandidate,
     nsfw_gating_countries: &'a NsfwGatingCountries,
@@ -13,22 +11,15 @@ pub struct RuleContext<'a> {
 
 impl<'a> RuleContext<'a> {
     pub(super) fn new(
-        safety_level: SafetyLevel,
         viewer: &'a ViewerFeatures,
         candidate: &'a HydratedTweetCandidate,
         nsfw_gating_countries: &'a NsfwGatingCountries,
     ) -> Self {
         Self {
-            safety_level,
             viewer,
             candidate,
             nsfw_gating_countries,
         }
-    }
-
-    #[inline]
-    pub fn safety_level(&self) -> SafetyLevel {
-        self.safety_level
     }
 
     #[inline]
@@ -268,17 +259,18 @@ impl TakedownPredicates<'_> {
 
     #[inline]
     fn in_viewer_country(&self, extractor: fn(&TakedownReason) -> Option<&str>) -> bool {
-        let Some(viewer_country) = &self.ctx.viewer.country_code else {
-            return false;
-        };
+        let viewer_country = self.ctx.viewer.country_code.as_deref();
         self.ctx
             .candidate
             .tweet_features
-            .takedown
-            .reasons
+            .takedown_reasons
             .iter()
             .filter_map(extractor)
-            .any(|c| c.eq_ignore_ascii_case(viewer_country))
+            .any(|c| {
+                c.eq_ignore_ascii_case(WORLDWIDE_COUNTRY_CODE)
+                    || c.eq_ignore_ascii_case(WORLDWIDE_COPYRIGHT_COUNTRY_CODE)
+                    || viewer_country.is_some_and(|v| c.eq_ignore_ascii_case(v))
+            })
     }
 
     #[inline]
@@ -297,11 +289,13 @@ impl TakedownPredicates<'_> {
 }
 
 const WORLDWIDE_COUNTRY_CODE: &str = "xx";
+const WORLDWIDE_COPYRIGHT_COUNTRY_CODE: &str = "xy";
 
 fn legal_takedown_country(reason: &TakedownReason) -> Option<&str> {
     match reason {
         TakedownReason::LegalRequest { country_code }
         | TakedownReason::UnspecifiedReason { country_code } => Some(country_code),
+        TakedownReason::Dmca => Some(WORLDWIDE_COPYRIGHT_COUNTRY_CODE),
         _ => None,
     }
 }

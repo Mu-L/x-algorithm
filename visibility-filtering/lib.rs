@@ -1,3 +1,27 @@
+#![deny(
+    clippy::dbg_macro,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::print_stderr,
+    clippy::print_stdout,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unwrap_used
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::dbg_macro,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::print_stderr,
+        clippy::print_stdout,
+        clippy::unwrap_used
+    )
+)]
+
 pub mod clients;
 pub mod config;
 pub mod dark_traffic_setup;

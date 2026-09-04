@@ -169,34 +169,10 @@ pub(super) const SOCIALGRAPH_DROPS: &[RuleSpec] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        AuthorFeatures, HydratedTweetCandidate, VfAction, ViewerAuthorRelationship, ViewerFeatures,
+    use crate::models::{AuthorFeatures, ViewerAuthorRelationship};
+    use crate::rules::fixtures::{
+        assert_allows, assert_drops, author_viewer, candidate, logged_out_viewer, viewer, VIEWER_ID,
     };
-    use crate::rules::fixtures::{author_viewer, candidate, logged_out_viewer, viewer, VIEWER_ID};
-    use crate::rules::test_context;
-
-    fn assert_drops(
-        spec: &RuleSpec,
-        viewer: &ViewerFeatures,
-        candidate: &HydratedTweetCandidate,
-        expected: &FilteredReason,
-    ) {
-        let action = spec.evaluate(&test_context(viewer, candidate));
-        assert!(
-            matches!(&action, VfAction::Drop(reason) if reason == expected),
-            "{} should drop with {expected:?}, got {action:?}",
-            spec.name()
-        );
-    }
-
-    fn assert_allows(spec: &RuleSpec, viewer: &ViewerFeatures, candidate: &HydratedTweetCandidate) {
-        let action = spec.evaluate(&test_context(viewer, candidate));
-        assert!(
-            matches!(action, VfAction::Allow),
-            "{} should allow, got {action:?}",
-            spec.name()
-        );
-    }
 
     fn author_flag_features(name: &str) -> AuthorFeatures {
         let mut features = AuthorFeatures::default();

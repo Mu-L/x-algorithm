@@ -1,5 +1,5 @@
 mod cached_value;
-pub mod codec;
+pub(crate) mod codec;
 mod expiring_cache;
 pub(crate) mod lookup;
 pub(crate) mod manhattan;

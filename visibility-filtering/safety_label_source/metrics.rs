@@ -206,7 +206,6 @@ pub(crate) fn record_cache_fallback_keys(
 #[derive(Clone, Copy)]
 pub(crate) enum WarmKeyResult {
     EligibleMiss,
-    SampledOut,
     Enqueued,
     DroppedChannelFull,
     FetchIssued,
@@ -217,7 +216,6 @@ impl WarmKeyResult {
     fn as_str(self) -> &'static str {
         match self {
             Self::EligibleMiss => "eligible_miss",
-            Self::SampledOut => "sampled_out",
             Self::Enqueued => "enqueued",
             Self::DroppedChannelFull => "dropped_channel_full",
             Self::FetchIssued => "fetch_issued",

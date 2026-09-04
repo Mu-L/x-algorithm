@@ -86,6 +86,7 @@ class ModelName:
     GROK_4_MINI_CRITICAL_SAFETY = "critical-safety"
     EAPI_GROK_420_REASONING_X_ALGO = "eapi-grok-420-reasoning-x-algo"
     EAPI_GROK_420_REASONING_INTERNAL = "eapi-grok-420-reasoning-internal"
+    EAPI_GROK_4_1_FAST_X_ALGO = "eapi-grok-4-1-fast-x-algo"
     EAPI_GROK_4_3_INTERNAL = "eapi-grok-4-3-internal"
     EAPI_GROK_4_3_X_ALGO = "eapi-grok-4-3-x-algo"
     EAPI_GROK_4_5_X_ALGO = "eapi-grok-4-5-x-algo"

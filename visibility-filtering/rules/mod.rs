@@ -38,11 +38,6 @@ pub(crate) fn test_context<'a>(
     use std::sync::LazyLock;
 
     static NSFW_GATING_COUNTRIES: LazyLock<crate::params::NsfwGatingCountries> =
-        LazyLock::new(crate::params::NsfwGatingCountries::new);
-    RuleContext::new(
-        SafetyLevel::TimelineHome,
-        viewer,
-        candidate,
-        &NSFW_GATING_COUNTRIES,
-    )
+        LazyLock::new(crate::params::NsfwGatingCountries::starting_at_default);
+    RuleContext::new(viewer, candidate, &NSFW_GATING_COUNTRIES)
 }

@@ -1964,6 +1964,7 @@ mod dedup_retention_tests {
         for skip in [
             "dry_run", 
             "dedup_skipped",
+            "very_high_follower_count",
             "high_follower_count",
             "pagerank_skipped",
             "gizmoduck_skipped",

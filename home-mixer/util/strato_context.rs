@@ -6,16 +6,16 @@ const STRATO_CONTEXT_KEY: &str = "stratocontext";
 const STRATO_CONTEXT_BIN_KEY: &str = "stratocontext-bin";
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct StratoContext {
+pub struct StratoContext {
+            #[prost(string, tag = "8")]
+    pub ad_id: String,
     #[prost(bool, tag = "11")]
     pub is_polling: bool,
+        #[prost(string, tag = "12")]
+    pub mobile_device_id: String,
 }
 
-pub fn is_polling(metadata: &MetadataMap) -> bool {
-    extract_strato_context(metadata).is_some_and(|ctx| ctx.is_polling)
-}
-
-fn extract_strato_context(metadata: &MetadataMap) -> Option<StratoContext> {
+pub fn parse(metadata: &MetadataMap) -> Option<StratoContext> {
     if let Some(value) = metadata.get(STRATO_CONTEXT_KEY)
         && let Ok(s) = value.to_str()
         && let Ok(bytes) = STANDARD.decode(s.trim())
@@ -44,18 +44,23 @@ mod tests {
         map
     }
 
+    fn polling(ctx: StratoContext) -> StratoContext {
+        StratoContext {
+            is_polling: true,
+            ..ctx
+        }
+    }
+
     #[test]
     fn polling_true() {
-        assert!(is_polling(&encode_ascii(&StratoContext {
-            is_polling: true
-        })));
+        let ctx = parse(&encode_ascii(&polling(StratoContext::default()))).unwrap();
+        assert!(ctx.is_polling);
     }
 
     #[test]
     fn polling_false() {
-        assert!(!is_polling(&encode_ascii(&StratoContext {
-            is_polling: false
-        })));
+        let ctx = parse(&encode_ascii(&StratoContext::default())).unwrap();
+        assert!(!ctx.is_polling);
     }
 
     #[test]
@@ -63,13 +68,25 @@ mod tests {
         let mut map = MetadataMap::new();
         map.insert_bin(
             STRATO_CONTEXT_BIN_KEY,
-            MetadataValue::from_bytes(&StratoContext { is_polling: true }.encode_to_vec()),
+            MetadataValue::from_bytes(&polling(StratoContext::default()).encode_to_vec()),
         );
-        assert!(is_polling(&map));
+        assert!(parse(&map).unwrap().is_polling);
     }
 
     #[test]
     fn missing_context() {
-        assert!(!is_polling(&MetadataMap::new()));
+        assert!(parse(&MetadataMap::new()).is_none());
+    }
+
+    #[test]
+    fn decodes_device_ids() {
+        let ctx = parse(&encode_ascii(&StratoContext {
+            ad_id: "ad-1".into(),
+            is_polling: false,
+            mobile_device_id: "dev-1".into(),
+        }))
+        .unwrap();
+        assert_eq!(ctx.ad_id, "ad-1");
+        assert_eq!(ctx.mobile_device_id, "dev-1");
     }
 }
