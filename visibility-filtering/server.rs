@@ -28,14 +28,14 @@ impl xai_x_service_builder::XService for VFServer {
 }
 
 impl VFServer {
-    pub async fn new(
+    pub(crate) async fn new(
         datacenter: &str,
         feature_switches: Arc<xai_feature_switches::FeatureSwitches>,
     ) -> Self {
         crate::server_deps::build_prod_server(datacenter, feature_switches).await
     }
 
-    pub fn from_endpoints(
+    pub(crate) fn from_endpoints(
         filter_tweets: FilterTweetsEndpoint,
         get_safety_labels: GetSafetyLabelsEndpoint,
     ) -> Self {

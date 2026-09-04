@@ -330,6 +330,8 @@ def get_encrypted_checkpointer(
 
 
 def assert_all_enveloped(path: pathlib.Path) -> None:
+    if not (path / "_DEK").is_file():
+        raise RuntimeError(f"encrypted save left no master _DEK at {path}; not committing")
     offenders = []
     for f in sorted(path.rglob("*")):
         if not f.is_file() or f.name in ("_DEK", "_DEK.claim"):

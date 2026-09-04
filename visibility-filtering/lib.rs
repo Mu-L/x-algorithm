@@ -22,18 +22,18 @@
     )
 )]
 
-pub mod clients;
+pub(crate) mod clients;
 pub mod config;
 pub mod dark_traffic_setup;
 pub(crate) mod filter;
 pub(crate) mod filter_tweets;
 pub(crate) mod get_safety_labels;
-pub mod hydration;
-pub mod models;
+pub(crate) mod hydration;
+pub(crate) mod models;
 pub mod params;
 pub(crate) mod reference_compare;
-pub mod rules;
-pub mod safety_label_source;
+pub(crate) mod rules;
+pub(crate) mod safety_label_source;
 pub mod server;
 pub(crate) mod server_deps;
-pub mod twemcache;
+pub(crate) mod twemcache;

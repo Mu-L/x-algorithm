@@ -29,6 +29,12 @@ BUNDLE_DIR = "export"
 MANIFEST_NAME = f"{BUNDLE_DIR}/MANIFEST.json"
 
 
+def restamp_manifest(data: bytes) -> bytes:
+    manifest = json.loads(data)
+    manifest["created_timestamp"] = time.time()
+    return json.dumps(manifest, indent=2).encode()
+
+
 class EmbeddingSlices(NamedTuple):
     hist_post_end: int
     hist_auth_end: int
@@ -306,8 +312,8 @@ def _make_forward_fn(
             )
         model = model_config.make(sharding_context=make_legacy_sharding_context(mesh))
         logits, candidate_continuous_predictions = model.forward(batch, recsys_embeddings)
-        log_probs = jax.nn.log_sigmoid(logits).astype(jnp.float32)
-        cont_preds = candidate_continuous_predictions.astype(jnp.float32)
+        log_probs = jax.nn.log_sigmoid(logits).astype(jnp.bfloat16).astype(jnp.float32)
+        cont_preds = candidate_continuous_predictions.astype(jnp.bfloat16).astype(jnp.float32)
         has_nan = jnp.any(jnp.isnan(log_probs), axis=tuple(range(1, log_probs.ndim)))
         return log_probs, cont_preds, has_nan
 

@@ -2858,11 +2858,16 @@ class RecsysTrainer(Trainer):
         return self._stablehlo_bundle_files or None
 
     def _write_stablehlo_bundle_files(self, prefix: str, bundle_files: list | None) -> None:
+        from xrex.train.recsys_bundle_export import MANIFEST_NAME, restamp_manifest
+
         try:
             for bundle_file in bundle_files or ():
+                data = bundle_file.data
+                if bundle_file.name == MANIFEST_NAME:
+                    data = restamp_manifest(data)
                 bundle_path = f"{OUT_PATH}/.{prefix}/{bundle_file.name}"
                 os.makedirs(os.path.dirname(bundle_path), exist_ok=True)
-                _write_all_bytes(bundle_path, memoryview(bundle_file.data))
+                _write_all_bytes(bundle_path, memoryview(data))
         except OSError:
             rank_logger.exception(
                 "StableHLO bundle write failed; disabling for the rest of this run "

@@ -7,6 +7,7 @@ use xai_visibility_filtering_proto as vf_pb;
 pub struct SafetyLabelMap(HashSet<SafetyLabelType>);
 
 impl SafetyLabelMap {
+    #[cfg(test)]
     pub fn new(label_types: HashSet<SafetyLabelType>) -> Self {
         Self(label_types)
     }

@@ -1,7 +1,7 @@
 use crate::clients::engagement_counts_client::EngagementCountsClient;
 use crate::models::candidate::{CandidateHelpers, PostCandidate};
 use crate::models::query::ScoredPostsQuery;
-use crate::params::{ColdStartFollowerCap, EnableEngagementCountsHydration, EnableViewerColdStart};
+use crate::params::{ColdStartFollowerCap, EnableEngagementCountsHydration};
 use crate::scorers::author_cold_start::cold_start_base_eligible;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -86,9 +86,7 @@ impl CachedHydrator<ScoredPostsQuery, PostCandidate> for EngagementCountsHydrato
     type CacheValue = CachedCounts;
 
     fn enable(&self, query: &ScoredPostsQuery) -> bool {
-        query.params.get(EnableViewerColdStart)
-            || (!query.has_cached_posts
-                && (query.params.get(EnableEngagementCountsHydration) || query.is_shadow_traffic))
+        query.params.get(EnableEngagementCountsHydration) || query.is_shadow_traffic
     }
 
     fn cache_store(&self) -> &dyn CacheStore<Self::CacheKey, Self::CacheValue> {
@@ -218,11 +216,12 @@ mod tests {
     async fn enable_matrix() {
         let h = hydrator(HashMap::new()).await;
         assert!(h.enable(&query(false, &[(COUNTS, "true")])));
-        assert!(h.enable(&query(false, &[(COLD_START, "true"), (COUNTS, "false")])));
-        assert!(h.enable(&query(true, &[(COLD_START, "true")])));
-        assert!(!h.enable(&query(true, &[(COUNTS, "true"), (COLD_START, "false")])));
-        assert!(!h.enable(&query(false, &[(COUNTS, "false"), (COLD_START, "false")])));
-        assert!(!h.enable(&query(true, &[(COUNTS, "false"), (COLD_START, "false")])));
+        assert!(h.enable(&query(true, &[(COUNTS, "true")])));
+        assert!(!h.enable(&query(false, &[(COUNTS, "false")])));
+        assert!(!h.enable(&query(true, &[(COUNTS, "false")])));
+        let mut shadow = query(true, &[(COUNTS, "false")]);
+        shadow.is_shadow_traffic = true;
+        assert!(h.enable(&shadow));
     }
 
     #[tokio::test]

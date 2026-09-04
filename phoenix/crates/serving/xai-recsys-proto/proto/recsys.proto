@@ -116,6 +116,8 @@ message PredictNextActionsRequest {
   PageDecodeParams pageDecode = 19;
 
   bool returnBackboneScores = 20;
+
+  map<string, string> experiment_overrides = 21;
 }
 
 message PageDecodeParams {
@@ -1243,6 +1245,8 @@ message SlateContext {
   optional uint32 reconCosMilli = 13;
   optional uint32 reconCountAbove = 14;
   optional uint32 reconGapAbove = 15;
+  optional uint32 exactK = 16;
+  optional uint32 exactGap = 17;
 }
 
 message ActionInfo {

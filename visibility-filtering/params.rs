@@ -7,8 +7,8 @@ use xai_feature_switches::{FeatureSwitches, RecipientBuilder, Value};
 
 pub const NSFW_GATING_COUNTRIES_KEY: &str = "rust_vf_nsfw_gating_countries";
 
-pub const SCALA_NSFW_GATING_FILE: &str = "country_specific_nsfw_content_gating.yml";
-pub const SCALA_NSFW_GATING_COUNTRIES_KEY: &str = "country_specific_nsfw_content_gating_countries";
+const SCALA_NSFW_GATING_FILE: &str = "country_specific_nsfw_content_gating.yml";
+const SCALA_NSFW_GATING_COUNTRIES_KEY: &str = "country_specific_nsfw_content_gating_countries";
 
 const DRIFT_COUNTER: &str = "nsfw_gating_countries_drift";
 
@@ -21,7 +21,7 @@ pub fn default_nsfw_gating_countries() -> Vec<String> {
     .to_vec()
 }
 
-pub struct NsfwGatingCountries {
+pub(crate) struct NsfwGatingCountries {
     countries: ArcSwap<Vec<String>>,
 }
 

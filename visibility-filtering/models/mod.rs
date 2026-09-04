@@ -10,7 +10,7 @@ pub use exclusive_content::ExclusiveContentFeatures;
 pub use relationship::ViewerAuthorRelationship;
 pub use safety_labels::{SafetyLabelMap, SafetyLabelType};
 pub use tweet::{CoreFeature, MediaFeature, NsfwFeature, TweetFeatures};
-pub use viewer::{Viewer, ViewerAge, ViewerFeatures, ADULT_AGE_YEARS};
+pub use viewer::{Viewer, ViewerAge, ViewerFeatures};
 
 use std::collections::HashMap;
 use xai_core_entities::entities::PureCoreData;

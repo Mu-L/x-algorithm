@@ -433,6 +433,27 @@ mod tests {
     }
 
     #[test]
+    fn assemble_hydrates_text_from_core_data() {
+        let candidates = vec![candidate(10, 100)];
+        let core_datas = HashMap::from([(
+            TweetId(10),
+            PureCoreData {
+                author_id: 100,
+                text: "muted words".to_string(),
+                ..Default::default()
+            },
+        )]);
+
+        let features = hydrator().assemble_tweet_features(
+            &candidates,
+            &core_datas,
+            &TweetHydration::default(),
+        );
+
+        assert_eq!(features[&TweetId(10)].core.text, "muted words");
+    }
+
+    #[test]
     fn assemble_defaults_features_when_core_missing() {
         let candidates = vec![resolve_candidate(
             &RawCandidate {

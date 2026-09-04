@@ -264,7 +264,7 @@ mod tests {
                     TweetId(2),
                     TweetFeatures {
                         core: crate::models::CoreFeature {
-                            text: "two".to_string(),
+                            source_tweet_id: Some(2),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -304,7 +304,7 @@ mod tests {
         let c = &assembled[0];
         assert_eq!(c.tweet_id, 2);
         assert_eq!(c.author_id, 200);
-        assert_eq!(c.tweet_features.core.text, "two");
+        assert_eq!(c.tweet_features.core.source_tweet_id, Some(2));
         assert!(c.author_features.is_suspended);
         assert!(c.relationship.viewer_follows_author);
     }

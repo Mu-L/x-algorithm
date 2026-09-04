@@ -6,20 +6,20 @@ pub const ENV_FS_PATH: &str = "VF_FS_PATH";
 pub const ENV_GIZMODUCK_CLIENT_ID: &str = "VF_GIZMODUCK_CLIENT_ID";
 pub const ENV_TWEMCACHE_CLIENT_NAME: &str = "VF_TWEMCACHE_CLIENT_NAME";
 
-pub const DEFAULT_FS_PATH: &str = "/usr/local/config/features/visibility/main/rust_vf.yml";
+const DEFAULT_FS_PATH: &str = "/usr/local/config/features/visibility/main/rust_vf.yml";
 
 pub fn fs_path() -> String {
     std::env::var(ENV_FS_PATH).unwrap_or_else(|_| DEFAULT_FS_PATH.to_string())
 }
 
-pub fn gizmoduck_client_id() -> String {
+pub(crate) fn gizmoduck_client_id() -> String {
     resolve_gizmoduck_client_id(
         std::env::var(ENV_GIZMODUCK_CLIENT_ID).ok().as_deref(),
         std::env::var(ENV_APP_ENV).ok().as_deref(),
     )
 }
 
-pub fn twemcache_client_name() -> String {
+pub(crate) fn twemcache_client_name() -> String {
     resolve_twemcache_client_name(std::env::var(ENV_TWEMCACHE_CLIENT_NAME).ok().as_deref())
 }
 
@@ -36,15 +36,15 @@ pub fn resolve_twemcache_client_name(configured: Option<&str>) -> String {
         .to_string()
 }
 
-pub fn dual_call_harness_enabled() -> bool {
+pub(crate) fn dual_call_harness_enabled() -> bool {
     parse_env_flag(std::env::var(ENV_DUAL_CALL_HARNESS_ENABLED).ok().as_deref())
 }
 
-pub fn fallback_cache_enabled() -> bool {
+pub(crate) fn fallback_cache_enabled() -> bool {
     parse_env_flag(std::env::var(ENV_FALLBACK_CACHE_ENABLED).ok().as_deref())
 }
 
-pub fn cache_warm_enabled() -> bool {
+pub(crate) fn cache_warm_enabled() -> bool {
     parse_env_flag(std::env::var(ENV_CACHE_WARM_ENABLED).ok().as_deref())
 }
 

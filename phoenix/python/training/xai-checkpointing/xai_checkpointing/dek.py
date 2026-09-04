@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pathlib
+import random
 import tempfile
 import time
 
@@ -12,6 +13,37 @@ rank_logger = logging.getLogger("rank")
 TREE_DEK_NAME = "_DEK"
 TREE_DEK_CLAIM_NAME = "_DEK.claim"
 PUBLISH_TIMEOUT_SECS = 120.0
+
+_TRANSIENT_KMS_MARKERS = ("429", "502", "503", "504", "KMS transport")
+_UNWRAP_ATTEMPTS = 4
+_UNWRAP_BACKOFF_CAP_SECS = 2.0
+
+
+def _unwrap_with_backoff(kms_client, dek_path) -> bytes:
+    import xai_kms
+
+    slept = 0.0
+    for attempt in range(_UNWRAP_ATTEMPTS):
+        try:
+            return bytes(xai_kms.nfs.unwrap_shared_dek(kms_client, dek_path))
+        except Exception as error:
+            transient = any(m in str(error) for m in _TRANSIENT_KMS_MARKERS)
+            remaining = _UNWRAP_BACKOFF_CAP_SECS - slept
+            if not transient or attempt == _UNWRAP_ATTEMPTS - 1 or remaining <= 0:
+                raise
+            delay = min(0.2 * 2**attempt, 1.0, remaining) * (0.5 + random.random())
+            delay = min(delay, remaining)
+            rank_logger.warning(
+                "KMS unwrap of %s failed transiently (%s); retrying in %.1fs (attempt %d/%d)",
+                dek_path,
+                error,
+                delay,
+                attempt + 1,
+                _UNWRAP_ATTEMPTS,
+            )
+            time.sleep(delay)
+            slept += delay
+    raise AssertionError("unreachable")
 
 
 def _read_wrapped_dek(dek_path: pathlib.Path) -> dict | None:
@@ -60,7 +92,7 @@ def publish_tree_dek(path: pathlib.Path, kms_client) -> tuple[bytes, str, dict, 
             )
         rank_logger.debug("waiting for wrapped DEK at %s", dek_path)
         time.sleep(0.1)
-    raw = bytes(xai_kms.nfs.unwrap_shared_dek(kms_client, dek_path))
+    raw = _unwrap_with_backoff(kms_client, dek_path)
     return raw, entry["wrapped"], entry.get("context") or {}, entry
 
 
@@ -70,12 +102,10 @@ _DERIVED_PREFIX = "xai-dek1:"
 
 
 def adopt_tree_dek(path: pathlib.Path, kms_client) -> bytes:
-    import xai_kms
-
     dek_path = path / TREE_DEK_NAME
     if dek_path.exists():
         entry = _read_wrapped_dek(dek_path) or {}
-        raw = bytes(xai_kms.nfs.unwrap_shared_dek(kms_client, dek_path))
+        raw = _unwrap_with_backoff(kms_client, dek_path)
         key_id = entry.get("key_id")
     else:
         raw = _unwrap_header_master(kms_client, path)
@@ -85,15 +115,13 @@ def adopt_tree_dek(path: pathlib.Path, kms_client) -> bytes:
 
 
 def _unwrap_header_master(kms_client, path: pathlib.Path) -> bytes:
-    import xai_kms
-
     wrapped, context = _header_wrapped_master(path)
     entry = {"key_id": "header", "context": context, "wrapped": wrapped}
     fd, tmp = tempfile.mkstemp(prefix="xai-ckpt-dek-", suffix=".json")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(entry, f)
-        return bytes(xai_kms.nfs.unwrap_shared_dek(kms_client, tmp))
+        return _unwrap_with_backoff(kms_client, tmp)
     finally:
         os.unlink(tmp)
 
@@ -110,8 +138,9 @@ def _header_wrapped_master(path: pathlib.Path) -> tuple[str, dict]:
     context = json.loads(head[start + wrapped_len : start + wrapped_len + context_len])
     if not field.startswith(_DERIVED_PREFIX):
         raise ValueError(
-            f"envelope at {envelope} carries a legacy per-file wrapped key, "
-            "not the xai-dek1 derived form"
+            f"unsupported wrapped-data-key format at {envelope}: expected "
+            f"'{_DERIVED_PREFIX}<salt>:<token>'; convert the tree to the "
+            "master-DEK format to load it"
         )
     _salt, master = field[len(_DERIVED_PREFIX) :].split(":", 1)
     if not master:

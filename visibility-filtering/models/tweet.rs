@@ -1,5 +1,9 @@
 #[derive(Clone, Debug, Default)]
 pub struct CoreFeature {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retained for the upcoming muted-keyword rule")
+    )]
     pub text: String,
     pub source_tweet_id: Option<u64>,
 }
