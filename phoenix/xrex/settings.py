@@ -100,9 +100,6 @@ RUN_TRACKER_URL: str = os.environ.get("XAI_RUN_TRACKER_URL", "")
 CHECKPOINT_PATH_PREFIX: str = os.environ.get("XAI_CHECKPOINT_PATH_PREFIX", "")
 
 
-COMMIT_HASH_FILE: str = os.environ.get("XREX_COMMIT_HASH_FILE", "")
-
-
 ROCE_FABRIC_CLOUD: str = os.environ.get("XREX_ROCE_FABRIC_CLOUD", "")
 
 

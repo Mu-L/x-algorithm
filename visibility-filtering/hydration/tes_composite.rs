@@ -5,7 +5,7 @@ use std::sync::Arc;
 use thrift::protocol::{TInputProtocol, TOutputProtocol, TSerializable, TType};
 use tonic::async_trait;
 use xai_core_entities::entities::{
-    EditControl, ExclusiveTweetControl, MediaEntity, Share, TakedownReason,
+    EditControl, ExclusiveTweetControl, MediaEntities, MediaEntity, Share, TakedownReason,
 };
 use xai_strato::strato_thrift::{strato_decode, StratoResult};
 use xai_strato::{encode, MValCodec, StratoGrpc};
@@ -69,35 +69,6 @@ impl TweetForVisibilitySource for ProdTweetForVisibilitySource {
     }
 }
 
-#[cfg(test)]
-#[derive(Default)]
-pub(crate) struct MockTweetForVisibilitySource {
-    pub(crate) tweets: HashMap<u64, Option<TweetForVisibility>>,
-    pub(crate) errors: HashMap<u64, String>,
-    pub(crate) requests: std::sync::Mutex<Vec<Vec<u64>>>,
-}
-
-#[cfg(test)]
-#[async_trait]
-impl TweetForVisibilitySource for MockTweetForVisibilitySource {
-    async fn get_tweets_for_visibility(
-        &self,
-        tweet_ids: &[u64],
-    ) -> HashMap<u64, Result<Option<TweetForVisibility>>> {
-        self.requests.lock().unwrap().push(tweet_ids.to_vec());
-        tweet_ids
-            .iter()
-            .map(|id| {
-                let item = match self.errors.get(id) {
-                    Some(message) => Err(anyhow!("{message}")),
-                    None => Ok(self.tweets.get(id).cloned().unwrap_or(None)),
-                };
-                (*id, item)
-            })
-            .collect()
-    }
-}
-
 pub(crate) fn decode_tweet_for_visibility(bytes: &[u8]) -> Result<Option<TweetForVisibility>> {
     match std::panic::catch_unwind(|| strato_decode::<Tweet>(bytes))
         .map_err(|_| anyhow!("MVal decoder panicked"))?
@@ -145,7 +116,7 @@ impl Tweet {
             takedown_reasons: self.takedown_reasons,
             media: MediaFeature {
                 has_media: self.has_media_refs || self.has_card_reference,
-                ..super::tes_hydrator::media_feature(self.media)
+                ..media_feature(self.media)
             },
             is_community_tweet: self.has_communities,
             edit_control: self.edit_control,
@@ -154,6 +125,32 @@ impl Tweet {
                 .map(|control| control.conversation_author_id),
         })
     }
+}
+
+fn media_feature(entities: MediaEntities) -> MediaFeature {
+    let mut feature = MediaFeature {
+        has_media: !entities.is_empty(),
+        ..Default::default()
+    };
+
+    for restrictions in entities
+        .iter()
+        .filter(|e| e.media_key.is_some())
+        .filter_map(|e| e.additional_metadata.as_ref())
+        .filter_map(|metadata| metadata.restrictions.as_ref())
+    {
+        feature.has_dmca_media |= restrictions.is_dmca == Some(true);
+        if let Some(geo) = &restrictions.geo_restrictions {
+            feature
+                .geo_allow_list
+                .extend(geo.whitelisted_country_codes.iter().flatten().cloned());
+            feature
+                .geo_deny_list
+                .extend(geo.blacklisted_country_codes.iter().flatten().cloned());
+        }
+    }
+
+    feature
 }
 
 impl TSerializable for Tweet {
@@ -256,7 +253,7 @@ fn read_communities_non_empty(proto: &mut dyn TInputProtocol) -> thrift::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hydration::tes_hydrator::build_tweet_features;
+    use crate::hydration::decode::tweet::build_tweet_features;
     use crate::models::{NsfwFeature, TweetFeatures};
     use thrift::protocol::{
         TBinaryOutputProtocol, TFieldIdentifier, TListIdentifier, TStructIdentifier,

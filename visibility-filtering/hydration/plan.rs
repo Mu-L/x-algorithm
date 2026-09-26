@@ -16,6 +16,7 @@ pub(crate) enum Source {
     GizmoduckAuthor,
     Flock,
     ViewerCountry,
+    Wingman,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub(super) enum KeyOrigin {
     ExclusiveConversationAuthor,
     ConversationRoot(&'static [ConversationControlArm]),
         ViewerForCoAllowedList,
+        MyNetworkRootNotFollowingViewer,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -53,6 +55,7 @@ impl KeyOrigin {
             KeyOrigin::ConversationRoot(_) | KeyOrigin::ViewerForCoAllowedList => {
                 Some(Hydrator::ConversationControl)
             }
+            KeyOrigin::MyNetworkRootNotFollowingViewer => Some(Hydrator::RootFollowsViewer),
         }
     }
 }
@@ -176,6 +179,12 @@ impl Hydrator {
                 ]),
                 ("conversation_control", "batch_check_followed_by"),
             ),
+            H::RootFollowsViewerSecondDegree => node(
+                S::Wingman,
+                Part::Column,
+                K::MyNetworkRootNotFollowingViewer,
+                ("conversation_control", "exists_intersect"),
+            ),
             H::SuperFollowsRoot => node(
                 S::Flock,
                 Part::Edge(Graph::SuperFollows, Forward),
@@ -195,11 +204,14 @@ impl Hydrator {
         self.spec().key.input()
     }
 
+            pub(crate) const fn is_edge(self) -> bool {
+        matches!(self.spec().source, Source::Flock | Source::Wingman)
+    }
+
         pub(super) const fn needs_viewer(self) -> bool {
-        let spec = self.spec();
-        matches!(spec.source, Source::Flock)
+        self.is_edge()
             || matches!(
-                spec.key,
+                self.spec().key,
                 KeyOrigin::Viewer | KeyOrigin::ViewerForCoAllowedList
             )
     }
@@ -250,7 +262,7 @@ impl Hydrators {
         closed
     }
 
-    pub(super) fn iter(self) -> impl Iterator<Item = Hydrator> {
+    pub(crate) fn iter(self) -> impl Iterator<Item = Hydrator> {
         Hydrator::VARIANTS
             .iter()
             .copied()
@@ -261,6 +273,8 @@ impl Hydrators {
 pub(crate) struct HydrationPlan {
     level: SafetyLevel,
     groups: Vec<Group>,
+    nodes: Hydrators,
+        logged_out_nodes: Hydrators,
 }
 
 pub(super) struct Group {
@@ -301,11 +315,26 @@ impl HydrationPlan {
                 }),
             }
         }
-        Self { level, groups }
+        Self {
+            level,
+            groups,
+            nodes,
+            logged_out_nodes: nodes
+                .iter()
+                .filter(|node| !node.needs_viewer())
+                .fold(Hydrators::empty(), Hydrators::with),
+        }
     }
 
     pub(crate) fn level(&self) -> SafetyLevel {
         self.level
+    }
+
+    pub(super) fn callable(&self, viewer_id: Option<u64>) -> Hydrators {
+        match viewer_id {
+            Some(_) => self.nodes,
+            None => self.logged_out_nodes,
+        }
     }
 
     pub(super) fn groups(&self) -> impl Iterator<Item = &Group> {
@@ -334,8 +363,8 @@ impl Group {
         fields
     }
 
-        pub(super) fn edges(&self) -> Vec<(Graph, EdgeDirection, Vec<KeyOrigin>)> {
-        let mut edges: Vec<(Graph, EdgeDirection, Vec<KeyOrigin>)> = Vec::new();
+        pub(super) fn edges(&self) -> Vec<(Graph, EdgeDirection, Hydrators)> {
+        let mut edges: Vec<(Graph, EdgeDirection, Hydrators)> = Vec::new();
         for node in self.nodes.iter() {
             let spec = node.spec();
             let Part::Edge(graph, direction) = spec.part else {
@@ -345,8 +374,8 @@ impl Group {
                 .iter_mut()
                 .find(|(g, d, _)| (*g, *d) == (graph, direction))
             {
-                Some((_, _, keys)) => keys.push(spec.key),
-                None => edges.push((graph, direction, vec![spec.key])),
+                Some((_, _, nodes)) => *nodes = nodes.with(node),
+                None => edges.push((graph, direction, Hydrators::of(node))),
             }
         }
         edges
@@ -366,6 +395,9 @@ impl fmt::Display for KeyOrigin {
                 write!(f, "root:{}", arms.join("|"))
             }
             KeyOrigin::ViewerForCoAllowedList => f.write_str("viewer:co_allowed_list"),
+            KeyOrigin::MyNetworkRootNotFollowingViewer => {
+                f.write_str("root:MyNetwork:not_followed")
+            }
         }
     }
 }
@@ -392,12 +424,15 @@ impl fmt::Display for HydrationPlan {
                 let fields: Vec<String> = fields.iter().map(|field| format!("{field:?}")).collect();
                 write!(f, " fields: {}", fields.join("|"))?;
             }
-            for (graph, direction, keys) in group.edges() {
+            for (graph, direction, nodes) in group.edges() {
                 let direction = match direction {
                     EdgeDirection::Forward => "fwd",
                     EdgeDirection::Reverse => "rev",
                 };
-                let keys: Vec<String> = keys.iter().map(KeyOrigin::to_string).collect();
+                let keys: Vec<String> = nodes
+                    .iter()
+                    .map(|node| node.spec().key.to_string())
+                    .collect();
                 write!(
                     f,
                     " {}-{direction}[{}]",
@@ -438,7 +473,7 @@ gizmoduck/get_viewer_data after: - nodes: viewer_profile fields: ACCOUNT|EXTENDE
 gizmoduck/get_users after: pure_core nodes: author_safety,author_labels fields: SAFETY|LABELS
 socialgraph/batch_check_relationships after: pure_core nodes: follows,blocks,mutes,mute_retweets follows-fwd[author] blocks-fwd[author] mutes-fwd[author] mute_retweets-fwd[author] (skipped logged out)
 exclusive_content/batch_check_super_follows after: tweet nodes: super_follows_exclusive super_follows-fwd[exclusive_author] (skipped logged out)
-timeline_home_hydration: 10 calls
+timeline_home_hydration: 11 calls
 tes/get_tweet_core_datas after: - nodes: pure_core
 tes/get_tweets_for_visibility after: - nodes: tweet
 conversation_control/get_conversation_controls after: - nodes: conversation_control
@@ -448,6 +483,7 @@ gizmoduck/get_users after: pure_core nodes: author_safety fields: SAFETY|LABELS
 blocked_by/batch_check_blocked_by after: pure_core nodes: blocked_by_author,blocked_by_reply_root blocks-rev[author,reply_root] (skipped logged out)
 exclusive_content/batch_check_super_follows after: tweet nodes: super_follows_exclusive super_follows-fwd[exclusive_author] (skipped logged out)
 conversation_control/batch_check_followed_by+batch_check_super_follows after: conversation_control nodes: root_follows_viewer,super_follows_root follows-rev[root:Community|MyNetwork] super_follows-fwd[root:Subscribers] (skipped logged out)
+conversation_control/exists_intersect after: root_follows_viewer nodes: root_follows_viewer_second_degree (skipped logged out)
 conversation_control/tfe_top_country after: conversation_control nodes: viewer_country (skipped logged out)
 immersive_expanded_recommendations: 7 calls
 tes/get_tweet_core_datas after: - nodes: pure_core

@@ -1,6 +1,4 @@
-use crate::hydration::Hydrator;
-#[cfg(test)]
-use crate::hydration::Hydrators;
+use crate::hydration::{Hydrator, Hydrators};
 use crate::models::{
     tweet_timestamp_ms, AuthorFeatures, AuthorLabelSet, HydratedTweetCandidate, SafetyLabelMap,
     TweetFeatures, Viewer, ViewerFeatures, ViewerProfile,
@@ -61,6 +59,11 @@ impl<'a> RuleContext<'a> {
     }
 
     #[inline]
+    pub(super) fn failed(&self) -> Hydrators {
+        self.facts.candidate.failed
+    }
+
+    #[inline]
     pub(super) fn tweet_features(&self) -> &'a TweetFeatures {
         &self.reads(Hydrator::Tweet).tweet_features
     }
@@ -81,47 +84,9 @@ impl<'a> RuleContext<'a> {
     }
 
     #[inline]
-    pub(super) fn viewer_follows_author(&self) -> bool {
-        self.reads(Hydrator::Follows)
-            .relationship
-            .viewer_follows_author
-    }
-
-    #[inline]
-    pub(super) fn viewer_blocks_author(&self) -> bool {
-        self.reads(Hydrator::Blocks)
-            .relationship
-            .viewer_blocks_author
-    }
-
-    #[inline]
-    pub(super) fn viewer_mutes_author(&self) -> bool {
-        self.reads(Hydrator::Mutes).relationship.viewer_mutes_author
-    }
-
-    #[inline]
-    pub(super) fn viewer_mutes_retweets_from_author(&self) -> bool {
-        self.reads(Hydrator::MuteRetweets)
-            .relationship
-            .viewer_mutes_retweets_from_author
-    }
-
-    #[inline]
-    pub(super) fn blocked_by_author(&self) -> bool {
-        self.reads(Hydrator::BlockedByAuthor).blocked_by.author
-    }
-
-    #[inline]
-    pub(super) fn blocked_by_reply_root_author(&self) -> bool {
-        self.reads(Hydrator::BlockedByReplyRoot)
-            .blocked_by
-            .root_author
-    }
-
-    #[inline]
-    pub(super) fn viewer_super_follows_exclusive_author(&self) -> bool {
-        self.reads(Hydrator::SuperFollowsExclusive)
-            .viewer_super_follows_exclusive_author
+    pub(super) fn edge(&self, node: Hydrator) -> bool {
+        debug_assert!(node.is_edge(), "{node:?} is not an edge node");
+        self.reads(node).edges.contains(node)
     }
 
     #[inline]
@@ -131,24 +96,6 @@ impl<'a> RuleContext<'a> {
             .conversation_control
             .as_ref();
         features.map(|features| &features.control)
-    }
-
-    #[inline]
-    pub(super) fn root_author_follows_viewer(&self) -> Option<bool> {
-        let features = self
-            .reads(Hydrator::RootFollowsViewer)
-            .conversation_control
-            .as_ref();
-        features.and_then(|features| features.root_author_follows_viewer)
-    }
-
-    #[inline]
-    pub(super) fn viewer_super_follows_root_author(&self) -> Option<bool> {
-        let features = self
-            .reads(Hydrator::SuperFollowsRoot)
-            .conversation_control
-            .as_ref();
-        features.and_then(|features| features.viewer_super_follows_root_author)
     }
 
     #[inline]

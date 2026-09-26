@@ -4,7 +4,7 @@ use crate::models::{
     Withholding,
 };
 use crate::params::NsfwGatingCountries;
-use crate::rules::rule_spec::{ActionSpec, RuleClause};
+use crate::rules::rule_spec::{ActionSpec, RuleClause, Truth};
 use crate::rules::RuleContext;
 use crate::rules::{author_rules, tweet_rules};
 use std::sync::Arc;
@@ -18,6 +18,11 @@ pub enum SafetyLevel {
     TimelineHomeRecommendations,
     TimelineHomeHydration,
     ImmersiveExpandedRecommendations,
+}
+
+pub struct Evaluation {
+    pub verdict: Verdict,
+    pub rested_on: Hydrators,
 }
 
 pub(super) struct Policy<'a> {
@@ -50,49 +55,75 @@ impl<'a> Policy<'a> {
             .flatten()
     }
 
-    pub(super) fn evaluate(&self, context: &RuleContext<'_>) -> Verdict {
+    pub(super) fn evaluate(&self, context: &RuleContext<'_>) -> Evaluation {
         let mut media = None;
         let mut engagement = None;
+        let mut withholding_rested_on = Hydrators::empty();
+        let mut slot_rested_on = Hydrators::empty();
 
         for rule in self.rules() {
-            if !rule.applies(context) {
-                continue;
-            }
+            let truth = rule.applies(context);
+            let unknown_reads = match truth {
+                Truth::Unknown { failed, .. } => failed,
+                Truth::True | Truth::False => Hydrators::empty(),
+            };
             match &rule.action {
                 ActionSpec::Drop(reason) => {
-                    return Verdict::Withheld(Decided {
-                        value: Withholding::Drop(reason.clone()),
-                        by: rule.rule_name,
-                    });
+                    withholding_rested_on = withholding_rested_on.union(unknown_reads);
+                    if truth.resolves_true() {
+                        return Evaluation {
+                            verdict: Verdict::Withheld(Decided {
+                                value: Withholding::Drop(reason.clone()),
+                                by: rule.rule_name,
+                            }),
+                            rested_on: withholding_rested_on,
+                        };
+                    }
                 }
                 ActionSpec::Tombstone(reason) => {
-                    return Verdict::Withheld(Decided {
-                        value: Withholding::Tombstone(*reason),
-                        by: rule.rule_name,
-                    });
+                    withholding_rested_on = withholding_rested_on.union(unknown_reads);
+                    if truth.resolves_true() {
+                        return Evaluation {
+                            verdict: Verdict::Withheld(Decided {
+                                value: Withholding::Tombstone(*reason),
+                                by: rule.rule_name,
+                            }),
+                            rested_on: withholding_rested_on,
+                        };
+                    }
                 }
                 ActionSpec::Interstitial {
                     legacy,
                     media: reason,
-                } => {
-                    media.get_or_insert_with(|| Decided {
-                        value: MediaInterstitial {
-                            legacy: legacy.clone(),
-                            reason: reason.clone(),
-                        },
-                        by: rule.rule_name,
-                    });
+                } if media.is_none() => {
+                    slot_rested_on = slot_rested_on.union(unknown_reads);
+                    if truth.resolves_true() {
+                        media = Some(Decided {
+                            value: MediaInterstitial {
+                                legacy: legacy.clone(),
+                                reason: reason.clone(),
+                            },
+                            by: rule.rule_name,
+                        });
+                    }
                 }
-                ActionSpec::LimitedEngagement(reason) => {
-                    engagement.get_or_insert(Decided {
-                        value: LimitedEngagement(*reason),
-                        by: rule.rule_name,
-                    });
+                ActionSpec::LimitedEngagement(reason) if engagement.is_none() => {
+                    slot_rested_on = slot_rested_on.union(unknown_reads);
+                    if truth.resolves_true() {
+                        engagement = Some(Decided {
+                            value: LimitedEngagement(*reason),
+                            by: rule.rule_name,
+                        });
+                    }
                 }
+                ActionSpec::Interstitial { .. } | ActionSpec::LimitedEngagement(_) => {}
             }
         }
 
-        Verdict::Shown { media, engagement }
+        Evaluation {
+            verdict: Verdict::Shown { media, engagement },
+            rested_on: withholding_rested_on.union(slot_rested_on),
+        }
     }
 
     fn rule_names(&self) -> impl Iterator<Item = &'static str> + '_ {
@@ -220,7 +251,7 @@ impl RuleEngine {
         level: SafetyLevel,
         viewer: &ViewerFeatures,
         candidate: &HydratedTweetCandidate,
-    ) -> Verdict {
+    ) -> Evaluation {
         let policy = Self::select(level);
         let context = RuleContext::new(viewer, candidate, &self.nsfw_gating_countries);
         #[cfg(test)]
@@ -257,12 +288,9 @@ mod tests {
     use crate::hydration::Hydrator;
     use crate::models::{ViewerAge, ViewerProfile};
     use crate::rules::fixtures::{candidate, viewer, viewer_with_profile, VIEWER_ID};
-    use crate::rules::golden_corpus;
-    use crate::rules::rule_spec::{
-        Audience, Condition, Predicate, RelationshipPredicate, ViewerPredicate,
-    };
-    use std::collections::BTreeSet;
-    use xai_core_entities::entities::ConversationControlArm;
+    use crate::rules::rule_spec::Condition;
+    use crate::rules::{holds_narrowed, test_context};
+    use std::slice;
 
     #[test]
     fn refreshed_config_country_reaches_the_wired_rule() {
@@ -280,7 +308,9 @@ mod tests {
             })
         };
 
-        let verdict = rule_engine.evaluate(SafetyLevel::TimelineHome, &viewer, &candidate);
+        let verdict = rule_engine
+            .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
+            .verdict;
         assert!(!matches!(verdict, Verdict::Withheld(_)));
 
         gating_countries.refresh_and_check_drift(
@@ -297,7 +327,9 @@ rust_vf:
             .unwrap(),
             "/nonexistent/rust_vf.yml",
         );
-        let verdict = rule_engine.evaluate(SafetyLevel::TimelineHome, &viewer, &candidate);
+        let verdict = rule_engine
+            .evaluate(SafetyLevel::TimelineHome, &viewer, &candidate)
+            .verdict;
         assert!(matches!(
             verdict,
             Verdict::Withheld(Decided {
@@ -473,172 +505,39 @@ rust_vf:
     fn a_rule_reading_an_underived_hydrator_panics_in_tests() {
         let viewer = viewer(VIEWER_ID);
         let candidate = candidate().build();
-        let context = crate::rules::test_context(&viewer, &candidate)
+        let context = test_context(&viewer, &candidate)
             .hydrated_by(Hydrators::all().without(Hydrator::Follows));
-        context.viewer_follows_author();
+        context.edge(Hydrator::Follows);
     }
-
-    fn predicates(rule: &RuleClause) -> impl Iterator<Item = Predicate> + '_ {
-        rule.when
-            .iter()
-            .flat_map(|condition| match condition {
-                Condition::Holds(leaf) | Condition::Not(leaf) => std::slice::from_ref(leaf),
-                Condition::AnyOf(leaves) => leaves,
-                Condition::Opaque { .. } => &[],
-            })
-            .copied()
-    }
-
-    struct Branch {
-        leaf: &'static str,
-        wired_by: fn(&RuleClause) -> bool,
-        taken: fn(&ViewerFeatures, &HydratedTweetCandidate) -> bool,
-    }
-
-    fn has_arm(candidate: &HydratedTweetCandidate, arms: &[ConversationControlArm]) -> bool {
-        candidate
-            .conversation_control
-            .as_ref()
-            .is_some_and(|features| arms.contains(&features.control.arm))
-    }
-
-    const BRANCHES: [Branch; 7] = {
-        use ConversationControlArm::{Co, Community, MyNetwork, Subscribers};
-        use Predicate::{Relationship, Viewer};
-        use RelationshipPredicate::*;
-        [
-            Branch {
-                leaf: "ViewerSuperFollowsAuthor on an exclusive tweet",
-                wired_by: |rule| {
-                    predicates(rule).any(|p| matches!(p, Relationship(ViewerSuperFollowsAuthor)))
-                },
-                taken: |_, c| c.tweet_features.exclusive_conversation_author_id.is_some(),
-            },
-            Branch {
-                leaf: "ViewerIsFollowedByConversationRootAuthor under Community or MyNetwork",
-                wired_by: |rule| {
-                    predicates(rule).any(|p| {
-                        matches!(p, Relationship(ViewerIsFollowedByConversationRootAuthor))
-                    })
-                },
-                taken: |_, c| has_arm(c, &[Community, MyNetwork]),
-            },
-            Branch {
-                leaf: "ViewerSuperFollowsConversationRootAuthor under Subscribers",
-                wired_by: |rule| {
-                    predicates(rule).any(|p| {
-                        matches!(p, Relationship(ViewerSuperFollowsConversationRootAuthor))
-                    })
-                },
-                taken: |_, c| has_arm(c, &[Subscribers]),
-            },
-            Branch {
-                leaf: "ViewerIsInAllowedCountry under Co with an allowed list",
-                wired_by: |rule| {
-                    predicates(rule).any(|p| matches!(p, Relationship(ViewerIsInAllowedCountry)))
-                },
-                taken: |_, c| {
-                    c.conversation_control.as_ref().is_some_and(|features| {
-                        features.control.arm == Co
-                            && !features.control.allowed_country_codes.is_empty()
-                    })
-                },
-            },
-            Branch {
-                leaf: "ViewerIsBlockedByConversationRootAuthor with a blocking reply root",
-                wired_by: |rule| {
-                    predicates(rule)
-                        .any(|p| matches!(p, Relationship(ViewerIsBlockedByConversationRootAuthor)))
-                },
-                taken: |_, c| c.blocked_by.root_author,
-            },
-            Branch {
-                leaf: "InNsfwGatingCountry for a logged-in viewer",
-                wired_by: |rule| {
-                    predicates(rule)
-                        .any(|p| matches!(p, Viewer(ViewerPredicate::InNsfwGatingCountry)))
-                },
-                taken: |v, _| v.viewer.user_id().is_some(),
-            },
-            Branch {
-                leaf: "ExceptAuthorAndFollowers for a logged-in non-author",
-                wired_by: |rule| rule.applies_to == Audience::ExceptAuthorAndFollowers,
-                taken: |v, c| v.viewer.user_id().is_some_and(|id| id != c.author_id),
-            },
-        ]
-    };
 
     #[test]
     fn every_leaf_reads_only_the_hydrators_it_declares() {
-        let mut paths: Vec<BTreeSet<bool>> = vec![BTreeSet::new(); BRANCHES.len()];
-        for case in golden_corpus::corpus() {
-            let narrowed = |hydrators: Hydrators| {
-                crate::rules::test_context(&case.viewer, &case.candidate).hydrated_by(hydrators)
-            };
-            for &level in SafetyLevel::VARIANTS {
-                for rule in RuleEngine::select(level).rules() {
-                    for condition in rule.when {
-                        if let Condition::Opaque { .. } = condition {
-                            condition.holds(&narrowed(condition.hydrators()));
-                        }
-                    }
-                    for leaf in predicates(rule) {
-                        leaf.holds(&narrowed(leaf.hydrators()));
-                    }
-                    rule.applies_to
-                        .admits(&narrowed(rule.applies_to.hydrators()));
-                }
-            }
-            for (branch, seen) in BRANCHES.iter().zip(&mut paths) {
-                if RuleEngine::select(case.level).rules().any(branch.wired_by) {
-                    seen.insert((branch.taken)(&case.viewer, &case.candidate));
+        let viewer = viewer(VIEWER_ID);
+        let candidate = candidate().build();
+        for &level in SafetyLevel::VARIANTS {
+            for condition in RuleEngine::select(level).rules().flat_map(|rule| rule.when) {
+                let leaves = match condition {
+                    Condition::Holds(leaf) | Condition::Not(leaf) => slice::from_ref(leaf),
+                    Condition::AnyOf(leaves) => leaves,
+                };
+                for &leaf in leaves {
+                    holds_narrowed(leaf, &viewer, &candidate);
                 }
             }
         }
-        for (branch, seen) in BRANCHES.iter().zip(paths) {
-            assert_eq!(
-                seen.len(),
-                2,
-                "the corpus takes one path of {}",
-                branch.leaf
-            );
-        }
-    }
-
-    #[test]
-    fn opaque_conditions_are_three_documented_takedown_joins() {
-        use crate::rules::rule_spec::Condition;
-        let mut opaque = Vec::new();
-        for spec in TIMELINE_HOME_RECOMMENDATIONS_POLICY
-            .rules()
-            .chain(FILTER_ALL_POLICY.rules())
-        {
-            for condition in spec.when {
-                if let Condition::Opaque { id, doc, .. } = condition {
-                    assert!(
-                        !doc.trim().is_empty(),
-                        "opaque condition {id} must carry a doc"
-                    );
-                    opaque.push(*id);
-                }
-            }
-        }
-        assert_eq!(
-            opaque,
-            vec![
-                "legal_takedown_in_viewer_country",
-                "local_laws_takedown_in_viewer_country",
-                "media_geo_restricted_in_viewer_country",
-            ]
-        );
     }
 
     mod engine {
         use super::super::*;
+        use crate::hydration::Hydrator;
         use crate::models::{
             HydratedTweetCandidate, LimitedEngagementReason, TombstoneReason, ViewerFeatures,
         };
-        use crate::rules::rule_spec::{ActionSpec, Audience, Condition};
+        use crate::rules::fixtures::{allow, blurred};
+        use crate::rules::rule_spec::{
+            ActionSpec, Audience, Condition, Predicate, RelationshipPredicate, TweetPredicate,
+            ViewerPredicate,
+        };
         use crate::rules::test_context;
         use xai_visibility_filtering::models::FilteredReason;
         use xai_x_thrift::action::InterstitialReason;
@@ -652,19 +551,16 @@ rust_vf:
             }
         }
 
-        const NEVER: Condition = Condition::Opaque {
-            id: "never",
-            doc: "test leaf that never holds",
-            eval: |_| false,
-            hydrators: Hydrators::empty(),
-        };
+        const NEVER_LEAF: Predicate = Predicate::Tweet(TweetPredicate::CreatedAfter(u64::MAX));
+        const NEVER: Condition = Condition::Holds(NEVER_LEAF);
 
-        const UNREACHABLE: Condition = Condition::Opaque {
-            id: "unreachable",
-            doc: "test leaf that must not be evaluated",
-            eval: |_| panic!("a rule after a terminal action must never be evaluated"),
-            hydrators: Hydrators::empty(),
-        };
+        const FOLLOWS: Predicate =
+            Predicate::Relationship(RelationshipPredicate::ViewerFollowsAuthor);
+        const BLOCKS: Predicate =
+            Predicate::Relationship(RelationshipPredicate::ViewerBlocksAuthor);
+        const LOGGED_OUT: Predicate = Predicate::Viewer(ViewerPredicate::LoggedOut);
+
+        const UNREACHABLE: Condition = Condition::Holds(FOLLOWS);
 
         const DROP_SUSPENDED: ActionSpec = ActionSpec::Drop(FilteredReason::AuthorIsSuspended);
         const TOMBSTONE: ActionSpec = ActionSpec::Tombstone(TombstoneReason::LocalRegulations);
@@ -721,14 +617,15 @@ rust_vf:
         #[test]
         fn first_terminal_returns_before_later_rules() {
             let (viewer, candidate) = context_inputs();
-            let context = test_context(&viewer, &candidate);
+            let context = test_context(&viewer, &candidate)
+                .hydrated_by(Hydrators::all().without(Hydrator::Follows));
 
             assert_eq!(
-                SHORT_CIRCUIT.evaluate(&context),
+                SHORT_CIRCUIT.evaluate(&context).verdict,
                 withheld(Withholding::Drop(FilteredReason::AuthorIsSuspended), "drop")
             );
             assert_eq!(
-                TOMBSTONE_FIRST.evaluate(&context),
+                TOMBSTONE_FIRST.evaluate(&context).verdict,
                 withheld(
                     Withholding::Tombstone(TombstoneReason::LocalRegulations),
                     "tombstone"
@@ -740,7 +637,9 @@ rust_vf:
         fn each_slot_keeps_its_first_restriction() {
             let (viewer, candidate) = context_inputs();
 
-            let verdict = RESTRICTIONS.evaluate(&test_context(&viewer, &candidate));
+            let verdict = RESTRICTIONS
+                .evaluate(&test_context(&viewer, &candidate))
+                .verdict;
 
             assert_eq!(
                 verdict,
@@ -758,6 +657,110 @@ rust_vf:
                     }),
                 }
             );
+        }
+
+        fn follows_and_blocks_failed() -> (ViewerFeatures, HydratedTweetCandidate) {
+            let candidate = HydratedTweetCandidate {
+                failed: Hydrators::of(Hydrator::Follows).with(Hydrator::Blocks),
+                ..HydratedTweetCandidate::default()
+            };
+            (ViewerFeatures::default(), candidate)
+        }
+
+        #[test]
+        fn clauses_combine_in_three_values_and_unknown_resolves_to_the_default() {
+            let (viewer, candidate) = follows_and_blocks_failed();
+            let follows = Hydrators::of(Hydrator::Follows);
+            let dropped = withheld(Withholding::Drop(FilteredReason::AuthorIsSuspended), "rule");
+            let rows: [(&[Condition], Verdict, Hydrators); 6] = [
+                (&[Condition::Holds(FOLLOWS)], allow(), follows),
+                (
+                    &[Condition::Holds(FOLLOWS), NEVER],
+                    allow(),
+                    Hydrators::empty(),
+                ),
+                (&[Condition::Not(FOLLOWS)], dropped.clone(), follows),
+                (
+                    &[Condition::AnyOf(&[FOLLOWS, LOGGED_OUT])],
+                    dropped,
+                    Hydrators::empty(),
+                ),
+                (
+                    &[Condition::AnyOf(&[FOLLOWS, NEVER_LEAF])],
+                    allow(),
+                    follows,
+                ),
+                (
+                    &[
+                        Condition::AnyOf(&[BLOCKS, LOGGED_OUT]),
+                        Condition::Holds(FOLLOWS),
+                    ],
+                    allow(),
+                    follows,
+                ),
+            ];
+            for (index, (when, verdict, rested_on)) in rows.into_iter().enumerate() {
+                let rules = [RuleClause {
+                    rule_name: "rule",
+                    when,
+                    applies_to: Audience::Everyone,
+                    action: DROP_SUSPENDED,
+                }];
+                let evaluation =
+                    Policy::new(&[&rules]).evaluate(&test_context(&viewer, &candidate));
+                assert_eq!(
+                    (evaluation.verdict, evaluation.rested_on),
+                    (verdict, rested_on),
+                    "row {index}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_verdict_rests_on_the_unknown_clauses_that_could_have_changed_it() {
+            let (viewer, candidate) = follows_and_blocks_failed();
+            let follows = Hydrators::of(Hydrator::Follows);
+            let unknown = |action| RuleClause {
+                rule_name: "unknown",
+                when: &[Condition::Holds(FOLLOWS)],
+                applies_to: Audience::Everyone,
+                action,
+            };
+            let blur = blurred(InterstitialReason::Sensitive(true), "blur");
+            let rows = [
+                (
+                    [unknown(DROP_SUSPENDED), always("drop", DROP_SUSPENDED)],
+                    withheld(Withholding::Drop(FilteredReason::AuthorIsSuspended), "drop"),
+                    follows,
+                ),
+                (
+                    [unknown(INTERSTITIAL_NSFW), always("drop", DROP_SUSPENDED)],
+                    withheld(Withholding::Drop(FilteredReason::AuthorIsSuspended), "drop"),
+                    Hydrators::empty(),
+                ),
+                (
+                    [
+                        always("blur", INTERSTITIAL_NSFW),
+                        unknown(INTERSTITIAL_UNSPECIFIED),
+                    ],
+                    blur.clone(),
+                    Hydrators::empty(),
+                ),
+                (
+                    [always("blur", INTERSTITIAL_NSFW), unknown(LIMIT)],
+                    blur,
+                    follows,
+                ),
+            ];
+            for (index, (rules, verdict, rested_on)) in rows.into_iter().enumerate() {
+                let evaluation =
+                    Policy::new(&[&rules]).evaluate(&test_context(&viewer, &candidate));
+                assert_eq!(
+                    (evaluation.verdict, evaluation.rested_on),
+                    (verdict, rested_on),
+                    "row {index}"
+                );
+            }
         }
     }
 }

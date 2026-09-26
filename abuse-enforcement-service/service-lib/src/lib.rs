@@ -12,9 +12,12 @@ pub mod gizmoduck;
 pub mod gizmoduck_labels;
 pub mod growthbook;
 pub mod growthbook_writer;
+#[cfg(test)]
+mod ledger_contract_fixtures;
 pub mod limiter;
 pub mod manhattan;
 pub mod metrics;
+pub mod overturn_hold;
 pub mod rules;
 pub mod service;
 pub mod sliding_window;
@@ -160,6 +163,54 @@ struct EnforcementCtx {
     allowlist: Option<allowlist::ManhattanAllowlist>,
             kafka_producer_decisions: Option<Arc<KafkaProducer>>,
                 kafka_producer_decisions_json: Option<Arc<KafkaProducer>>,
+                            hold_gate: Arc<overturn_hold::HoldGate>,
+}
+
+fn gated_actions(
+    specs: &[decision::ActionSpec],
+    cfg: &overturn_hold::HoldGateConfig,
+) -> Vec<overturn_hold::GatedAction> {
+    use overturn_hold::GatedAction;
+    let mut out = Vec::new();
+    if cfg.gates_suspend() {
+        let mut perm: Option<bool> = None;
+        for spec in specs {
+            if let decision::ActionSpec::SuspendUser { perm: p, .. } = spec {
+                let all_perm = perm.get_or_insert(true);
+                *all_perm &= *p;
+            }
+        }
+        if let Some(perm) = perm {
+            out.push(GatedAction::Suspend { perm });
+        }
+    }
+    for spec in specs {
+        if let decision::ActionSpec::AddLabelsV2 { labels, .. } = spec {
+            for name in labels {
+                let already = out
+                    .iter()
+                    .any(|a| matches!(a, GatedAction::Label { name: n } if n == name));
+                if cfg.gates_label(name) && !already {
+                    out.push(GatedAction::Label { name: name.clone() });
+                }
+            }
+        }
+    }
+    out
+}
+
+fn strip_held_labels(specs: &mut Vec<decision::ActionSpec>, held: &[String]) {
+    if held.is_empty() {
+        return;
+    }
+    for spec in specs.iter_mut() {
+        if let decision::ActionSpec::AddLabelsV2 { labels, .. } = spec {
+            labels.retain(|l| !held.contains(l));
+        }
+    }
+    specs.retain(
+        |s| !matches!(s, decision::ActionSpec::AddLabelsV2 { labels, .. } if labels.is_empty()),
+    );
 }
 
 struct ScoreResultProcessor {
@@ -420,7 +471,53 @@ async fn run_enforcement_inner(
             }
             Ok(outcome)
         }
-        ExpandedDecision::Act(specs) => {
+        ExpandedDecision::Act(mut specs) => {
+            // Overturn-hold gate: skip a suspend, or strip a label, that a
+            // human reviewer overturned on appeal while that hold is still active.
+            let mut hold_gate_info = BTreeMap::new();
+            let gate_cfg = ctx.dynamic_config.overturn_hold_gate();
+            let gated = gated_actions(&specs, &gate_cfg);
+            if !gated.is_empty() {
+                let mut gate = ctx
+                    .hold_gate
+                    .evaluate(&gate_cfg, facts.user_id, source_topic, &gated)
+                    .await;
+                if let Some(status) = gate.skip_status {
+                    return Ok(hold_gate_skip_outcome(
+                        status,
+                        gate.info,
+                        dry_run,
+                        &facts,
+                        score,
+                        requested_actions_skipped.take(),
+                    ));
+                }
+                if !gate.strip_labels.is_empty() {
+                    strip_held_labels(&mut specs, &gate.strip_labels);
+                    if specs.is_empty() {
+                        gate.mark_label_collapse();
+                        info!(
+                            user_id = facts.user_id,
+                            topic = source_topic,
+                            labels_stripped = %gate.info
+                                .get("overturn_hold_labels_stripped")
+                                .map(String::as_str)
+                                .unwrap_or(""),
+                            "overturn-hold gate (enforce): every action was a held label; skipping decision"
+                        );
+                        return Ok(hold_gate_skip_outcome(
+                            overturn_hold::STATUS_HOLD_OVERTURNED,
+                            gate.info,
+                            dry_run,
+                            &facts,
+                            score,
+                            requested_actions_skipped.take(),
+                        ));
+                    }
+                }
+                hold_gate_info = gate.info;
+            }
+
             if !ctx.dynamic_config.try_enforce(facts.entity_type).await {
                 warn!(
                     entity_type = facts.entity_type.as_str(),
@@ -478,6 +575,7 @@ async fn run_enforcement_inner(
             if let Some(json) = requested_actions_skipped {
                 additional_info_map.insert("requested_actions_skipped".into(), json);
             }
+            additional_info_map.extend(hold_gate_info);
 
             enforce_actions(
                 &ctx.ais_client,
@@ -526,8 +624,44 @@ fn skip_outcome(
     )
 }
 
+fn hold_gate_skip_outcome(
+    status: &str,
+    gate_info: BTreeMap<String, String>,
+    dry_run: bool,
+    facts: &Facts,
+    score: &abuse_proto::ScoreResult,
+    requested_actions_skipped: Option<String>,
+) -> abuse_proto::DecisionOutcome {
+    let mut outcome = skip_outcome(status.to_owned(), dry_run, facts, score);
+    outcome.info.extend(gate_info);
+    if let Some(json) = requested_actions_skipped {
+        outcome
+            .info
+            .insert("requested_actions_skipped".into(), json);
+    }
+    outcome
+}
+
+#[cfg(test)]
 fn outcome_holds_full_dedup(status: &str) -> bool {
-    status == "success"
+    dedup_retention_for(status) == DedupRetention::Full
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DedupRetention {
+        Full,
+            Skip,
+                Release,
+}
+
+fn dedup_retention_for(status: &str) -> DedupRetention {
+    if status == "success" {
+        DedupRetention::Full
+    } else if status == overturn_hold::STATUS_HOLD_LOOKUP_FAILED {
+        DedupRetention::Release
+    } else {
+        DedupRetention::Skip
+    }
 }
 
 async fn write_dedup_outcome(
@@ -539,6 +673,13 @@ async fn write_dedup_outcome(
     outcome: &abuse_proto::DecisionOutcome,
     claim_nonce: Option<u64>,
 ) {
+    let retention = dedup_retention_for(&outcome.status);
+    if retention == DedupRetention::Release {
+        dedup_cache
+            .invalidate(entity_type, entity_id, claim_nonce)
+            .await;
+        return;
+    }
     let mut score_for_dedup = score.clone();
     score_for_dedup.decoded_actions.clear();
     let acted_class = outcome
@@ -556,7 +697,7 @@ async fn write_dedup_outcome(
     };
     let json_bytes = serde_json::to_vec(&entry).unwrap_or_default();
     let compressed = zstd::encode_all(json_bytes.as_slice(), 3).unwrap_or(json_bytes);
-    if outcome_holds_full_dedup(&outcome.status) {
+    if retention == DedupRetention::Full {
         dedup_cache
             .update(
                 entity_type,
@@ -1247,6 +1388,33 @@ pub async fn build_state(cfg: Config) -> Result<(Arc<service::AppState>, Config)
 
     let kafka_producers = build_kafka_producers(&cfg, &dynamic_config).await;
 
+    let startup_probe =
+        overturn_hold::startup_probe_requested(cfg.overturn_hold_startup_probe.as_deref());
+    let hold_gate = Arc::new(overturn_hold::HoldGate::from_url(
+        cfg.overturn_hold_ledger_url.as_deref(),
+        startup_probe,
+        cfg.overturn_hold_env.as_deref(),
+    ));
+    if startup_probe {
+        let gate = hold_gate.clone();
+        tokio::spawn(async move {
+            gate.startup_probe().await;
+        });
+    }
+    hold_gate.publish_config(&dynamic_config.overturn_hold_gate());
+    {
+        let gate = hold_gate.clone();
+        let dynamic_config = dynamic_config.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(overturn_hold::CONFIG_PUBLISH_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                gate.publish_config(&dynamic_config.overturn_hold_gate());
+            }
+        });
+    }
+
     let state = Arc::new(AppState {
         ais_client,
         dynamic_config,
@@ -1259,6 +1427,7 @@ pub async fn build_state(cfg: Config) -> Result<(Arc<service::AppState>, Config)
         growthbook_environment: cfg.growthbook_environment.clone(),
         kafka_ready: Arc::new(AtomicBool::new(false)),
         kafka_producers,
+        hold_gate,
     });
 
     Ok((state, cfg))
@@ -1700,6 +1869,7 @@ pub async fn start_kafka_consumers(
         allowlist: state.allowlist.clone(),
         kafka_producer_decisions: state.kafka_producers.decisions().cloned(),
         kafka_producer_decisions_json: state.kafka_producers.decisions_json().cloned(),
+        hold_gate: state.hold_gate.clone(),
     };
 
     {
@@ -2291,7 +2461,22 @@ mod kafka_topic_config_tests {
 
 #[cfg(test)]
 mod dedup_retention_tests {
-    use super::outcome_holds_full_dedup;
+    use super::{DedupRetention, dedup_retention_for, outcome_holds_full_dedup};
+
+                            #[test]
+    fn hold_lookup_failed_releases_the_claim_hold_overturned_is_a_skip() {
+        assert_eq!(
+            dedup_retention_for(crate::overturn_hold::STATUS_HOLD_LOOKUP_FAILED),
+            DedupRetention::Release
+        );
+        assert_eq!(
+            dedup_retention_for(crate::overturn_hold::STATUS_HOLD_OVERTURNED),
+            DedupRetention::Skip
+        );
+        assert_eq!(dedup_retention_for("success"), DedupRetention::Full);
+        assert_eq!(dedup_retention_for("dry_run"), DedupRetention::Skip);
+        assert_eq!(dedup_retention_for("dedup_skipped"), DedupRetention::Skip);
+    }
 
                         #[test]
     fn only_success_holds_full_dedup_window() {
@@ -2312,9 +2497,432 @@ mod dedup_retention_tests {
             "invalid_entity_id",
             "requested_actions_denied",
             "platform_row_without_requested_actions",
+            crate::overturn_hold::STATUS_HOLD_OVERTURNED,
+            crate::overturn_hold::STATUS_HOLD_LOOKUP_FAILED,
         ] {
             assert!(!outcome_holds_full_dedup(skip), "{skip} must not hold 24h");
         }
+    }
+}
+
+#[cfg(test)]
+mod hold_gate_trigger_tests {
+    use super::*;
+    use crate::decision::ActionSpec;
+    use crate::facts::RequestedActionFacts;
+    use crate::generic_actions::GenericActionAllowlist;
+    use crate::overturn_hold::{GateKind, GateMode, GatedAction, HoldGateConfig};
+
+    fn suspend() -> ActionSpec {
+        ActionSpec::SuspendUser {
+            perm: false,
+            policy: "PlatformManipulation".into(),
+        }
+    }
+
+    fn label() -> ActionSpec {
+        ActionSpec::AddLabelsV2 {
+            labels: vec!["SpamHighRecall".into()],
+            ttl_msec: None,
+        }
+    }
+
+    fn perm_suspend() -> ActionSpec {
+        ActionSpec::SuspendUser {
+            perm: true,
+            policy: "Cse".into(),
+        }
+    }
+
+            fn suspend_only_cfg() -> HoldGateConfig {
+        HoldGateConfig {
+            mode: GateMode::Enforce,
+            ..HoldGateConfig::default()
+        }
+    }
+
+        fn label_cfg(labels: &[&str]) -> HoldGateConfig {
+        HoldGateConfig {
+            mode: GateMode::Enforce,
+            kinds: vec![GateKind::Suspend, GateKind::Label],
+            labels: labels.iter().map(|s| (*s).to_owned()).collect(),
+            ..HoldGateConfig::default()
+        }
+    }
+
+    fn labels_spec(labels: &[&str]) -> ActionSpec {
+        ActionSpec::AddLabelsV2 {
+            labels: labels.iter().map(|s| (*s).to_owned()).collect(),
+            ttl_msec: Some(86_400_000),
+        }
+    }
+
+    fn gated_label(name: &str) -> GatedAction {
+        GatedAction::Label { name: name.into() }
+    }
+
+                        #[test]
+    fn suspend_detection_covers_plain_composite_and_never_labels() {
+        let c = suspend_only_cfg();
+        assert_eq!(
+            gated_actions(&[suspend()], &c),
+            vec![GatedAction::TEMPORARY_SUSPEND]
+        );
+        assert_eq!(
+            gated_actions(&[perm_suspend()], &c),
+            vec![GatedAction::PERMANENT_SUSPEND]
+        );
+        assert_eq!(
+            gated_actions(&[label(), suspend()], &c),
+            vec![GatedAction::TEMPORARY_SUSPEND]
+        );
+        assert_eq!(
+            gated_actions(
+                &[
+                    ActionSpec::AddPostLabelsV2 {
+                        labels: vec!["Cse".into()],
+                        ttl_msec: None,
+                    },
+                    perm_suspend(),
+                ],
+                &c
+            ),
+            vec![GatedAction::PERMANENT_SUSPEND]
+        );
+        assert_eq!(
+            gated_actions(&[suspend(), perm_suspend()], &c),
+            vec![GatedAction::TEMPORARY_SUSPEND]
+        );
+        assert_eq!(
+            gated_actions(&[perm_suspend(), suspend()], &c),
+            vec![GatedAction::TEMPORARY_SUSPEND]
+        );
+        assert_eq!(
+            gated_actions(&[perm_suspend(), label(), perm_suspend()], &c),
+            vec![GatedAction::PERMANENT_SUSPEND],
+            "all-perm set stays permanent"
+        );
+        assert!(gated_actions(&[label()], &c).is_empty());
+        assert!(gated_actions(&[label(), ActionSpec::Captcha], &c).is_empty());
+        assert!(gated_actions(&[ActionSpec::Arkose, ActionSpec::SpamLivenessCheck], &c).is_empty());
+        assert!(gated_actions(&[], &c).is_empty());
+        assert_eq!(HoldGateConfig::default().kinds, vec![GateKind::Suspend]);
+        assert!(HoldGateConfig::default().labels.is_empty());
+    }
+
+                        #[test]
+    fn label_detection_follows_kinds_and_labels() {
+        let c = label_cfg(&["SpamHighRecall"]);
+        assert_eq!(
+            gated_actions(&[labels_spec(&["SpamHighRecall"])], &c),
+            vec![gated_label("SpamHighRecall")]
+        );
+        assert_eq!(
+            gated_actions(
+                &[
+                    labels_spec(&["SpamMediumRecall", "SpamHighRecall"]),
+                    ActionSpec::Captcha,
+                ],
+                &c
+            ),
+            vec![gated_label("SpamHighRecall")],
+            "labels not in the config are ignored"
+        );
+        assert_eq!(
+            gated_actions(&[labels_spec(&["SpamHighRecall"]), perm_suspend()], &c),
+            vec![
+                GatedAction::PERMANENT_SUSPEND,
+                gated_label("SpamHighRecall")
+            ]
+        );
+        assert_eq!(
+            gated_actions(
+                &[
+                    labels_spec(&["SpamHighRecall"]),
+                    labels_spec(&["SpamHighRecall", "Other"]),
+                ],
+                &c
+            ),
+            vec![gated_label("SpamHighRecall")]
+        );
+        let c2 = label_cfg(&["SpamHighRecall", "SpamMediumRecall"]);
+        assert_eq!(
+            gated_actions(&[labels_spec(&["SpamMediumRecall", "SpamHighRecall"])], &c2),
+            vec![
+                gated_label("SpamMediumRecall"),
+                gated_label("SpamHighRecall")
+            ]
+        );
+        assert!(
+            gated_actions(
+                &[ActionSpec::AddPostLabelsV2 {
+                    labels: vec!["SpamHighRecall".into()],
+                    ttl_msec: None,
+                }],
+                &c
+            )
+            .is_empty()
+        );
+        let inert = label_cfg(&[]);
+        assert!(gated_actions(&[labels_spec(&["SpamHighRecall"])], &inert).is_empty());
+        assert_eq!(
+            gated_actions(&[labels_spec(&["SpamHighRecall"]), suspend()], &inert),
+            vec![GatedAction::TEMPORARY_SUSPEND]
+        );
+        let no_label_kind = HoldGateConfig {
+            labels: vec!["SpamHighRecall".into()],
+            ..suspend_only_cfg()
+        };
+        assert!(gated_actions(&[labels_spec(&["SpamHighRecall"])], &no_label_kind).is_empty());
+        let label_only_kind = HoldGateConfig {
+            kinds: vec![GateKind::Label],
+            ..label_cfg(&["SpamHighRecall"])
+        };
+        assert_eq!(
+            gated_actions(
+                &[labels_spec(&["SpamHighRecall"]), suspend()],
+                &label_only_kind
+            ),
+            vec![gated_label("SpamHighRecall")]
+        );
+    }
+
+                #[test]
+    fn strip_held_labels_removes_only_the_held_names() {
+        let held = vec!["SpamHighRecall".to_owned()];
+        let mut specs = vec![labels_spec(&["SpamHighRecall"])];
+        strip_held_labels(&mut specs, &held);
+        assert!(specs.is_empty());
+        let mut specs = vec![labels_spec(&["SpamHighRecall", "SpamMediumRecall"])];
+        strip_held_labels(&mut specs, &held);
+        assert_eq!(specs, vec![labels_spec(&["SpamMediumRecall"])]);
+        let mut specs = vec![labels_spec(&["SpamHighRecall"]), suspend()];
+        strip_held_labels(&mut specs, &held);
+        assert_eq!(specs, vec![suspend()]);
+        let post = ActionSpec::AddPostLabelsV2 {
+            labels: vec!["SpamHighRecall".into()],
+            ttl_msec: None,
+        };
+        let mut specs = vec![
+            ActionSpec::Captcha,
+            labels_spec(&["SpamHighRecall"]),
+            post.clone(),
+        ];
+        strip_held_labels(&mut specs, &held);
+        assert_eq!(
+            specs,
+            vec![ActionSpec::Captcha, post],
+            "post labels are never touched"
+        );
+        let before = vec![labels_spec(&["SpamHighRecall"]), suspend()];
+        let mut specs = before.clone();
+        strip_held_labels(&mut specs, &[]);
+        assert_eq!(specs, before);
+        let mut specs = vec![labels_spec(&["SpamMediumRecall"])];
+        strip_held_labels(&mut specs, &held);
+        assert_eq!(specs, vec![labels_spec(&["SpamMediumRecall"])]);
+    }
+
+                    #[test]
+    fn suspend_detection_covers_generic_suspend_and_suspend_author() {
+        let user_allow = GenericActionAllowlist {
+            kinds: ["suspend"].iter().map(|s| (*s).to_owned()).collect(),
+            suspend_policies: ["PlatformManipulation"]
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+            labels: Default::default(),
+        };
+        let mut facts = ScoreFacts::from_score(&abuse_proto::ScoreResult::default());
+        facts.requested_actions = vec![RequestedActionFacts {
+            kind: "suspend".into(),
+            policy: "PlatformManipulation".into(),
+            head: "IsSpammer".into(),
+            ..Default::default()
+        }];
+        let (decision, _) =
+            expand_requested_actions_decision(EntityType::User, &facts, &user_allow);
+        let c = suspend_only_cfg();
+        match decision {
+            ExpandedDecision::Act(specs) => assert_eq!(
+                gated_actions(&specs, &c),
+                vec![GatedAction::TEMPORARY_SUSPEND]
+            ),
+            other => panic!("expected Act, got {other:?}"),
+        }
+
+        let post_allow = GenericActionAllowlist {
+            kinds: ["post_label", "suspend_author"]
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+            suspend_policies: ["Cse"].iter().map(|s| (*s).to_owned()).collect(),
+            labels: ["Cse"].iter().map(|s| (*s).to_owned()).collect(),
+        };
+        let mut facts = ScoreFacts::from_score(&abuse_proto::ScoreResult::default());
+        facts.requested_actions = vec![
+            RequestedActionFacts {
+                kind: "post_label".into(),
+                labels: vec!["Cse".into()],
+                head: "NearDupEmbeddingCseMatch".into(),
+                ..Default::default()
+            },
+            RequestedActionFacts {
+                kind: "suspend_author".into(),
+                perm: true,
+                policy: "Cse".into(),
+                head: "NearDupEmbeddingCseMatch".into(),
+                ..Default::default()
+            },
+        ];
+        let (decision, _) =
+            expand_requested_actions_decision(EntityType::Post, &facts, &post_allow);
+        match decision {
+            ExpandedDecision::Act(specs) => {
+                assert_eq!(specs.len(), 2, "label + author suspend");
+                assert_eq!(
+                    gated_actions(&specs, &c),
+                    vec![GatedAction::PERMANENT_SUSPEND],
+                    "suspend_author perm:true → permanent shape"
+                );
+            }
+            other => panic!("expected Act, got {other:?}"),
+        }
+
+        facts.requested_actions.truncate(1);
+        let (decision, _) =
+            expand_requested_actions_decision(EntityType::Post, &facts, &post_allow);
+        match decision {
+            ExpandedDecision::Act(specs) => {
+                assert!(gated_actions(&specs, &c).is_empty());
+                assert!(gated_actions(&specs, &label_cfg(&["Cse"])).is_empty());
+            }
+            other => panic!("expected Act, got {other:?}"),
+        }
+    }
+
+                #[test]
+    fn hold_skip_propagates_global_dry_run_and_audit_keys() {
+        let score = abuse_proto::ScoreResult {
+            user_id: 4242,
+            model_version: "m@1".into(),
+            ..Default::default()
+        };
+        let facts = Facts {
+            entity_type: EntityType::User,
+            entity_id: 4242,
+            user_id: 4242,
+            topic: "abuse.embeddings.user_decisions".into(),
+            score: ScoreFacts::from_score(&score),
+            entity: EntityFacts::User(UserFacts::default()),
+            uas: None,
+        };
+        let mut gate_info = BTreeMap::new();
+        gate_info.insert("overturn_hold_mode".to_owned(), "enforce".to_owned());
+        gate_info.insert("overturn_hold_id".to_owned(), "77".to_owned());
+        gate_info.insert("overturn_hold_head".to_owned(), "FollowBot".to_owned());
+        gate_info.insert(
+            "overturn_hold_expires_at".to_owned(),
+            "2026-12-01T00:00:00+00:00".to_owned(),
+        );
+        gate_info.insert("overturn_hold_probe_ms".to_owned(), "2".to_owned());
+
+        for global_dry_run in [true, false] {
+            let out = hold_gate_skip_outcome(
+                crate::overturn_hold::STATUS_HOLD_OVERTURNED,
+                gate_info.clone(),
+                global_dry_run,
+                &facts,
+                &score,
+                Some(r#"[{"kind":"label"}]"#.to_owned()),
+            );
+            assert_eq!(out.status, "hold_overturned");
+            assert_eq!(
+                out.dry_run, global_dry_run,
+                "hold skip must carry the service's global dry-run (G17)"
+            );
+            assert_eq!(out.source_topic, "abuse.embeddings.user_decisions");
+            assert_eq!(out.entity_id, 4242);
+            assert_eq!(out.info["overturn_hold_id"], "77");
+            assert_eq!(out.info["overturn_hold_head"], "FollowBot");
+            assert_eq!(out.info["overturn_hold_mode"], "enforce");
+            assert_eq!(out.info["overturn_hold_probe_ms"], "2");
+            assert!(out.info.contains_key("overturn_hold_expires_at"));
+            assert_eq!(
+                out.info["requested_actions_skipped"],
+                r#"[{"kind":"label"}]"#
+            );
+            assert!(
+                out.info.contains_key("cred_is_high"),
+                "{:?}",
+                out.info.keys()
+            );
+            assert!(!outcome_holds_full_dedup(&out.status));
+            assert_eq!(dedup_retention_for(&out.status), DedupRetention::Skip);
+        }
+        let mut label_info = BTreeMap::new();
+        label_info.insert("overturn_hold_mode".to_owned(), "enforce".to_owned());
+        label_info.insert(
+            "overturn_hold_labels_stripped".to_owned(),
+            "SpamHighRecall,SpamMediumRecall".to_owned(),
+        );
+        label_info.insert("overturn_hold_label_hold_id".to_owned(), "91,92".to_owned());
+        let mut gate = crate::overturn_hold::GateOutcome {
+            skip_status: None,
+            info: label_info,
+            strip_labels: vec!["SpamHighRecall".into(), "SpamMediumRecall".into()],
+            strip_hold_ids: vec![91, 92],
+        };
+        gate.mark_label_collapse();
+        let out = hold_gate_skip_outcome(
+            crate::overturn_hold::STATUS_HOLD_OVERTURNED,
+            gate.info,
+            false,
+            &facts,
+            &score,
+            None,
+        );
+        assert_eq!(out.status, "hold_overturned");
+        assert!(!out.dry_run);
+        assert_eq!(out.info["overturn_hold_kind"], "label");
+        assert_eq!(
+            out.info["overturn_hold_id"], "91",
+            "first stripped label's hold"
+        );
+        assert_eq!(out.info["overturn_hold_label"], "SpamHighRecall");
+        assert_eq!(
+            out.info["overturn_hold_labels_stripped"],
+            "SpamHighRecall,SpamMediumRecall"
+        );
+        assert_eq!(out.info["overturn_hold_label_hold_id"], "91,92");
+        assert_eq!(dedup_retention_for(&out.status), DedupRetention::Skip);
+        let mut suspend_info = gate_info.clone();
+        suspend_info.insert("overturn_hold_kind".to_owned(), "suspend".to_owned());
+        let out = hold_gate_skip_outcome(
+            crate::overturn_hold::STATUS_HOLD_OVERTURNED,
+            suspend_info,
+            false,
+            &facts,
+            &score,
+            None,
+        );
+        assert_eq!(out.info["overturn_hold_kind"], "suspend");
+        assert_eq!(out.info["overturn_hold_id"], "77");
+        assert!(!out.info.contains_key("overturn_hold_label"));
+
+        let out = hold_gate_skip_outcome(
+            crate::overturn_hold::STATUS_HOLD_LOOKUP_FAILED,
+            BTreeMap::new(),
+            true,
+            &facts,
+            &score,
+            None,
+        );
+        assert_eq!(out.status, "hold_lookup_failed");
+        assert!(out.dry_run);
+        assert!(!out.info.contains_key("requested_actions_skipped"));
+        assert!(!outcome_holds_full_dedup(&out.status));
+        assert_eq!(dedup_retention_for(&out.status), DedupRetention::Release);
     }
 }
 

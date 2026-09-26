@@ -203,6 +203,10 @@ impl DynamicConfig {
         generic_actions_from_config(self.config().as_ref(), entity_type)
     }
 
+    pub fn overturn_hold_gate(&self) -> crate::overturn_hold::HoldGateConfig {
+        crate::overturn_hold::HoldGateConfig::from_config(self.config().as_ref())
+    }
+
     pub fn config(&self) -> Option<Value> {
         let c = self.client.as_ref()?;
         Some(c.feature_result(GROWTHBOOK_CONFIG_KEY, None).value)
@@ -330,6 +334,13 @@ mod tests {
         let dc = cfg_without_gb(false);
         assert!(dc.bool("anything", true));
         assert!(!dc.bool("anything", false));
+    }
+
+    #[test]
+    fn overturn_hold_gate_defaults_off_when_no_client() {
+        let gate = cfg_without_gb(false).overturn_hold_gate();
+        assert_eq!(gate.mode, crate::overturn_hold::GateMode::Off);
+        assert!(!gate.enabled());
     }
 
     #[test]

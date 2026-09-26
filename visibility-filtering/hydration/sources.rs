@@ -1,45 +1,66 @@
 use crate::clients::about_this_account_client::AboutThisAccountClient;
 use crate::clients::gizmoduck_client::GizmoduckLookup;
 use crate::clients::socialgraph_client::{EdgeQuery, SocialgraphClient};
-use crate::hydration::gizmoduck_hydrator::AuthorFallbackCache;
+use crate::clients::wingman_client::WingmanClient;
+use crate::hydration::batch::{Hydrated, HydrationBatch, HydrationError, RawHydrationBatch};
+use crate::hydration::decode::author::{decode_authors, AuthorFallbackCache, DecodedAuthor};
+use crate::hydration::decode::tweet::{pure_core, PureCoreFallbackCache};
+use crate::hydration::decode::viewer::viewer_profile;
 use crate::hydration::tes_composite::{TweetForVisibility, TweetForVisibilitySource};
-use crate::hydration::tes_hydrator::PureCoreFallbackCache;
-use crate::safety_label_source::lookup::LookupError;
+use crate::hydration::Hydrators;
+use crate::models::{PureCore, ViewerProfile};
 use crate::safety_label_source::SafetyLabelSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use xai_core_entities::entities::{ConversationControl, GizmoduckUserResult, PureCoreData};
-use xai_core_entities::gizmoduck_client::{GizmoduckClient, QueryFields, ViewerData};
+use tracing::warn;
+use wingman_client::Exists;
+use xai_core_entities::entities::ConversationControl;
+use xai_core_entities::gizmoduck_client::{GizmoduckClient, QueryFields};
 use xai_core_entities::tweet_entity_service_client::TESClient;
 use xai_visibility_filtering_proto as vf_pb;
 
-pub(crate) type Keyed<V> = HashMap<u64, anyhow::Result<Option<V>>>;
-
 #[tonic::async_trait]
 pub(crate) trait Sources: Send + Sync {
-    async fn pure_cores(&self, tweet_ids: Vec<u64>) -> Keyed<PureCoreData>;
+    async fn pure_cores(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<PureCore>;
 
-    async fn tweets(&self, tweet_ids: Vec<u64>) -> Keyed<TweetForVisibility>;
+    async fn tweets(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<TweetForVisibility>;
 
-    async fn conversation_controls(&self, tweet_ids: Vec<u64>) -> Keyed<ConversationControl>;
+    async fn conversation_controls(
+        &self,
+        tweet_ids: Vec<u64>,
+    ) -> RawHydrationBatch<ConversationControl>;
 
     async fn safety_labels(
         &self,
         tweet_ids: Vec<u64>,
-    ) -> HashMap<u64, Result<Arc<vf_pb::SafetyLabelMap>, LookupError>>;
+    ) -> RawHydrationBatch<Arc<vf_pb::SafetyLabelMap>>;
 
-    async fn viewer(&self, viewer_id: u64, fields: &[QueryFields]) -> anyhow::Result<ViewerData>;
+    async fn viewer(
+        &self,
+        viewer_id: u64,
+        fields: &[QueryFields],
+    ) -> RawHydrationBatch<ViewerProfile>;
 
-    async fn users(&self, user_ids: Vec<u64>, fields: &[QueryFields])
-        -> Keyed<GizmoduckUserResult>;
+    async fn users(
+        &self,
+        user_ids: Vec<u64>,
+        fields: &[QueryFields],
+    ) -> RawHydrationBatch<DecodedAuthor>;
 
     async fn select_edges(
         &self,
         viewer_id: u64,
         queries: &[EdgeQuery],
-    ) -> Option<Vec<HashSet<u64>>>;
+        nodes: &[Hydrators],
+    ) -> RawHydrationBatch<Hydrators>;
 
-    async fn viewer_country(&self, viewer_id: u64) -> anyhow::Result<Option<String>>;
+    async fn viewer_country(&self, viewer_id: u64) -> RawHydrationBatch<Arc<str>>;
+
+    async fn second_degree(
+        &self,
+        viewer_id: u64,
+        root_author_ids: Vec<u64>,
+    ) -> RawHydrationBatch<bool>;
 
     fn pure_core_cache(&self) -> Option<&PureCoreFallbackCache> {
         None
@@ -50,6 +71,51 @@ pub(crate) trait Sources: Send + Sync {
     }
 }
 
+fn landed_edges(
+    queries: &[EdgeQuery],
+    nodes: &[Hydrators],
+    sets: Option<Vec<Option<HashSet<u64>>>>,
+) -> RawHydrationBatch<Hydrators> {
+    let destinations = queries
+        .iter()
+        .flat_map(|query| query.destination_ids.iter().copied());
+    let Some(sets) = sets else {
+        return HydrationBatch::from_hydrated(
+            destinations
+                .map(|destination| (destination, Hydrated::Failed(HydrationError::Error)))
+                .collect(),
+        );
+    };
+    let missing: HashSet<u64> = queries
+        .iter()
+        .zip(&sets)
+        .filter(|(_, set)| set.is_none())
+        .flat_map(|(query, _)| query.destination_ids.iter().copied())
+        .collect();
+    let mut landed: HashMap<u64, Hydrated<Hydrators>> = destinations
+        .map(|destination| {
+            let holds = Hydrators::empty();
+            let answer = if missing.contains(&destination) {
+                Hydrated::Partial(holds)
+            } else {
+                Hydrated::Found(holds)
+            };
+            (destination, answer)
+        })
+        .collect();
+    for ((query, nodes), set) in queries.iter().zip(nodes).zip(&sets) {
+        let Some(set) = set else { continue };
+        for destination in query.destination_ids.iter().filter(|id| set.contains(id)) {
+            if let Some(Hydrated::Found(holds) | Hydrated::Partial(holds)) =
+                landed.get_mut(destination)
+            {
+                *holds = holds.union(*nodes);
+            }
+        }
+    }
+    HydrationBatch::from_hydrated(landed)
+}
+
 pub(crate) struct ProdSources {
     tes: Arc<dyn TESClient + Send + Sync>,
     composite: Arc<dyn TweetForVisibilitySource>,
@@ -57,6 +123,7 @@ pub(crate) struct ProdSources {
     authors: GizmoduckLookup,
     socialgraph: Arc<dyn SocialgraphClient + Send + Sync>,
     about_this_account: Arc<dyn AboutThisAccountClient>,
+    wingman: Arc<dyn WingmanClient>,
     safety_labels: Arc<SafetyLabelSource>,
     author_cache: Option<AuthorFallbackCache>,
     pure_core_cache: Option<PureCoreFallbackCache>,
@@ -73,6 +140,7 @@ impl ProdSources {
         gizmoduck: Arc<dyn GizmoduckClient + Send + Sync>,
         socialgraph: Arc<dyn SocialgraphClient + Send + Sync>,
         about_this_account: Arc<dyn AboutThisAccountClient>,
+        wingman: Arc<dyn WingmanClient>,
         safety_labels: Arc<SafetyLabelSource>,
         author_cache: Option<AuthorFallbackCache>,
         pure_core_cache: Option<PureCoreFallbackCache>,
@@ -84,6 +152,7 @@ impl ProdSources {
             gizmoduck,
             socialgraph,
             about_this_account,
+            wingman,
             safety_labels,
             author_cache,
             pure_core_cache,
@@ -93,49 +162,104 @@ impl ProdSources {
 
 #[tonic::async_trait]
 impl Sources for ProdSources {
-    async fn pure_cores(&self, tweet_ids: Vec<u64>) -> Keyed<PureCoreData> {
-        self.tes.get_tweet_core_datas(tweet_ids).await
+    async fn pure_cores(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<PureCore> {
+        let cores = self.tes.get_tweet_core_datas(tweet_ids.clone()).await;
+        HydrationBatch::from_results(tweet_ids, cores).map(|core| pure_core(&core))
     }
 
-    async fn tweets(&self, tweet_ids: Vec<u64>) -> Keyed<TweetForVisibility> {
-        self.composite.get_tweets_for_visibility(&tweet_ids).await
+    async fn tweets(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<TweetForVisibility> {
+        let tweets = self.composite.get_tweets_for_visibility(&tweet_ids).await;
+        HydrationBatch::from_results(tweet_ids, tweets)
     }
 
-    async fn conversation_controls(&self, tweet_ids: Vec<u64>) -> Keyed<ConversationControl> {
-        self.tes.get_conversation_controls(tweet_ids).await
+    async fn conversation_controls(
+        &self,
+        tweet_ids: Vec<u64>,
+    ) -> RawHydrationBatch<ConversationControl> {
+        let controls = self.tes.get_conversation_controls(tweet_ids.clone()).await;
+        HydrationBatch::from_results(tweet_ids, controls)
     }
 
     async fn safety_labels(
         &self,
         tweet_ids: Vec<u64>,
-    ) -> HashMap<u64, Result<Arc<vf_pb::SafetyLabelMap>, LookupError>> {
-        self.safety_labels.get(&tweet_ids).await
+    ) -> RawHydrationBatch<Arc<vf_pb::SafetyLabelMap>> {
+        let labels = self
+            .safety_labels
+            .get(&tweet_ids)
+            .await
+            .into_iter()
+            .map(|(id, labels)| (id, labels.map(Some)))
+            .collect();
+        HydrationBatch::from_results(tweet_ids, labels)
     }
 
-    async fn viewer(&self, viewer_id: u64, fields: &[QueryFields]) -> anyhow::Result<ViewerData> {
-        self.gizmoduck
+    async fn viewer(
+        &self,
+        viewer_id: u64,
+        fields: &[QueryFields],
+    ) -> RawHydrationBatch<ViewerProfile> {
+        let profile = self
+            .gizmoduck
             .get_viewer_data_with_fields(viewer_id, fields)
             .await
+            .inspect_err(|error| warn!(%error, "Gizmoduck viewer lookup failed; failing open"))
+            .map(|data| Some(viewer_profile(data)));
+        HydrationBatch::from_results([viewer_id], HashMap::from([(viewer_id, profile)]))
     }
 
     async fn users(
         &self,
         user_ids: Vec<u64>,
         fields: &[QueryFields],
-    ) -> Keyed<GizmoduckUserResult> {
-        self.authors.get_users(user_ids, fields).await
+    ) -> RawHydrationBatch<DecodedAuthor> {
+        let users = self.authors.get_users(user_ids.clone(), fields).await;
+        decode_authors(HydrationBatch::from_results(user_ids, users))
     }
 
     async fn select_edges(
         &self,
         viewer_id: u64,
         queries: &[EdgeQuery],
-    ) -> Option<Vec<HashSet<u64>>> {
-        self.socialgraph.select_edges(viewer_id, queries).await
+        nodes: &[Hydrators],
+    ) -> RawHydrationBatch<Hydrators> {
+        let sets = self.socialgraph.select_edges(viewer_id, queries).await;
+        landed_edges(queries, nodes, sets)
     }
 
-    async fn viewer_country(&self, viewer_id: u64) -> anyhow::Result<Option<String>> {
-        self.about_this_account.tfe_top_country(viewer_id).await
+    async fn viewer_country(&self, viewer_id: u64) -> RawHydrationBatch<Arc<str>> {
+        let country = self
+            .about_this_account
+            .tfe_top_country(viewer_id)
+            .await
+            .inspect_err(|error| warn!(%error, "tfe_top_country lookup failed"))
+            .map(|country| country.map(Arc::from));
+        HydrationBatch::from_results([viewer_id], HashMap::from([(viewer_id, country)]))
+    }
+
+    async fn second_degree(
+        &self,
+        viewer_id: u64,
+        root_author_ids: Vec<u64>,
+    ) -> RawHydrationBatch<bool> {
+        let answers = self
+            .wingman
+            .batch_exists_intersect(viewer_id, &root_author_ids)
+            .await;
+        let answers = root_author_ids
+            .iter()
+            .copied()
+            .zip(answers.into_iter().flatten())
+            .map(|(root, answer)| {
+                let answer = match answer {
+                    Exists::Found => Ok(Some(true)),
+                    Exists::NotFound => Ok(Some(false)),
+                    Exists::Incomplete | Exists::ItemError => Err(answer),
+                };
+                (root, answer)
+            })
+            .collect();
+        HydrationBatch::from_results(root_author_ids, answers)
     }
 
     fn pure_core_cache(&self) -> Option<&PureCoreFallbackCache> {
@@ -155,8 +279,9 @@ mod in_memory {
     use super::*;
     use crate::clients::socialgraph_client::{EdgeDirection, Graph};
     use crate::hydration::plan::Source;
-    use crate::safety_label_source::types::FailureKind;
     use std::sync::Mutex;
+    use xai_core_entities::entities::{GizmoduckUserResult, PureCoreData};
+    use xai_core_entities::gizmoduck_client::ViewerData;
 
     #[derive(Clone, Copy, Debug)]
     pub(crate) enum Fault {
@@ -169,13 +294,16 @@ mod in_memory {
         pure_cores: HashMap<u64, PureCoreData>,
         tweets: HashMap<u64, TweetForVisibility>,
         controls: HashMap<u64, ConversationControl>,
+        labels: HashMap<u64, Arc<vf_pb::SafetyLabelMap>>,
         viewers: HashMap<u64, ViewerData>,
         users: HashMap<u64, GizmoduckUserResult>,
         edges: HashSet<(Graph, u64, u64)>,
-        countries: HashMap<u64, String>,
+        countries: HashMap<u64, Arc<str>>,
+        second_degree: HashSet<(u64, u64)>,
         faults: Mutex<Vec<(Source, Fault)>>,
         failed_keys: HashSet<(Source, u64)>,
         failed_graphs: HashSet<Graph>,
+        missing_graphs: HashSet<Graph>,
         author_cache: Option<AuthorFallbackCache>,
         pure_core_cache: Option<PureCoreFallbackCache>,
         calls: Mutex<Vec<(Source, Vec<u64>)>>,
@@ -209,6 +337,11 @@ mod in_memory {
             self
         }
 
+        pub(crate) fn labels(mut self, tweet_id: u64, labels: vf_pb::SafetyLabelMap) -> Self {
+            self.labels.insert(tweet_id, Arc::new(labels));
+            self
+        }
+
         pub(crate) fn viewer(mut self, viewer_id: u64, data: ViewerData) -> Self {
             self.viewers.insert(viewer_id, data);
             self
@@ -225,7 +358,12 @@ mod in_memory {
         }
 
         pub(crate) fn country(mut self, viewer_id: u64, country: &str) -> Self {
-            self.countries.insert(viewer_id, country.to_owned());
+            self.countries.insert(viewer_id, Arc::from(country));
+            self
+        }
+
+        pub(crate) fn second_degree_path(mut self, root_author: u64, viewer_id: u64) -> Self {
+            self.second_degree.insert((root_author, viewer_id));
             self
         }
 
@@ -240,6 +378,11 @@ mod in_memory {
 
         pub(crate) fn fail_graph(mut self, graph: Graph) -> Self {
             self.failed_graphs.insert(graph);
+            self
+        }
+
+        pub(crate) fn miss_graph(mut self, graph: Graph) -> Self {
+            self.missing_graphs.insert(graph);
             self
         }
 
@@ -318,34 +461,40 @@ mod in_memory {
             source: Source,
             ids: Vec<u64>,
             values: &HashMap<u64, V>,
-        ) -> Keyed<V> {
+        ) -> RawHydrationBatch<V> {
             let fails = self.enter(source, &ids).await;
-            ids.into_iter()
-                .map(|id| {
+            let results = ids
+                .iter()
+                .map(|&id| {
                     let result = if fails || self.failed_keys.contains(&(source, id)) {
-                        Err(anyhow::anyhow!("{source:?} unavailable"))
+                        Err(())
                     } else {
                         Ok(values.get(&id).cloned())
                     };
                     (id, result)
                 })
-                .collect()
+                .collect();
+            HydrationBatch::from_results(ids, results)
         }
     }
 
     #[tonic::async_trait]
     impl Sources for InMemorySources {
-        async fn pure_cores(&self, tweet_ids: Vec<u64>) -> Keyed<PureCoreData> {
+        async fn pure_cores(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<PureCore> {
             self.keyed(Source::TesPureCore, tweet_ids, &self.pure_cores)
                 .await
+                .map(|core| pure_core(&core))
         }
 
-        async fn tweets(&self, tweet_ids: Vec<u64>) -> Keyed<TweetForVisibility> {
+        async fn tweets(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<TweetForVisibility> {
             self.keyed(Source::TesComposite, tweet_ids, &self.tweets)
                 .await
         }
 
-        async fn conversation_controls(&self, tweet_ids: Vec<u64>) -> Keyed<ConversationControl> {
+        async fn conversation_controls(
+            &self,
+            tweet_ids: Vec<u64>,
+        ) -> RawHydrationBatch<ConversationControl> {
             self.keyed(Source::TesConversationControl, tweet_ids, &self.controls)
                 .await
         }
@@ -353,52 +502,40 @@ mod in_memory {
         async fn safety_labels(
             &self,
             tweet_ids: Vec<u64>,
-        ) -> HashMap<u64, Result<Arc<vf_pb::SafetyLabelMap>, LookupError>> {
-            let fails = self.enter(Source::SafetyLabels, &tweet_ids).await;
-            tweet_ids
-                .into_iter()
-                .map(|id| {
-                    let result = if fails || self.failed_keys.contains(&(Source::SafetyLabels, id))
-                    {
-                        Err(LookupError::new(
-                            FailureKind::ManhattanFetch,
-                            "labels unavailable",
-                        ))
-                    } else {
-                        Ok(Arc::default())
-                    };
-                    (id, result)
-                })
-                .collect()
+        ) -> RawHydrationBatch<Arc<vf_pb::SafetyLabelMap>> {
+            self.keyed(Source::SafetyLabels, tweet_ids, &self.labels)
+                .await
         }
 
         async fn viewer(
             &self,
             viewer_id: u64,
             fields: &[QueryFields],
-        ) -> anyhow::Result<ViewerData> {
+        ) -> RawHydrationBatch<ViewerProfile> {
             self.record_fields(Source::GizmoduckViewer, fields);
-            if self.enter(Source::GizmoduckViewer, &[viewer_id]).await {
-                anyhow::bail!("gizmoduck unavailable");
-            }
-            Ok(self.viewers.get(&viewer_id).cloned().unwrap_or_default())
+            self.keyed(Source::GizmoduckViewer, vec![viewer_id], &self.viewers)
+                .await
+                .map(viewer_profile)
         }
 
         async fn users(
             &self,
             user_ids: Vec<u64>,
             fields: &[QueryFields],
-        ) -> Keyed<GizmoduckUserResult> {
+        ) -> RawHydrationBatch<DecodedAuthor> {
             self.record_fields(Source::GizmoduckAuthor, fields);
-            self.keyed(Source::GizmoduckAuthor, user_ids, &self.users)
-                .await
+            decode_authors(
+                self.keyed(Source::GizmoduckAuthor, user_ids, &self.users)
+                    .await,
+            )
         }
 
         async fn select_edges(
             &self,
             viewer_id: u64,
             queries: &[EdgeQuery],
-        ) -> Option<Vec<HashSet<u64>>> {
+            nodes: &[Hydrators],
+        ) -> RawHydrationBatch<Hydrators> {
             let mut recorded = queries.to_vec();
             for query in &mut recorded {
                 query.destination_ids.sort_unstable();
@@ -407,31 +544,43 @@ mod in_memory {
             let failed_graph = queries
                 .iter()
                 .any(|query| self.failed_graphs.contains(&query.graph));
-            if self.enter(Source::Flock, &[viewer_id]).await || failed_graph {
-                return None;
-            }
+            let fails = self.enter(Source::Flock, &[viewer_id]).await || failed_graph;
             let answer = |query: &EdgeQuery| {
-                query
-                    .destination_ids
-                    .iter()
-                    .copied()
-                    .filter(|&id| {
-                        let edge = match query.direction {
-                            EdgeDirection::Forward => (query.graph, viewer_id, id),
-                            EdgeDirection::Reverse => (query.graph, id, viewer_id),
-                        };
-                        self.edges.contains(&edge)
-                    })
-                    .collect()
+                let holds = |&id: &u64| {
+                    let edge = match query.direction {
+                        EdgeDirection::Forward => (query.graph, viewer_id, id),
+                        EdgeDirection::Reverse => (query.graph, id, viewer_id),
+                    };
+                    self.edges.contains(&edge)
+                };
+                (!self.missing_graphs.contains(&query.graph)).then(|| {
+                    query
+                        .destination_ids
+                        .iter()
+                        .copied()
+                        .filter(holds)
+                        .collect()
+                })
             };
-            Some(queries.iter().map(answer).collect())
+            let sets = (!fails).then(|| queries.iter().map(answer).collect());
+            landed_edges(queries, nodes, sets)
         }
 
-        async fn viewer_country(&self, viewer_id: u64) -> anyhow::Result<Option<String>> {
-            if self.enter(Source::ViewerCountry, &[viewer_id]).await {
-                anyhow::bail!("tfe_top_country unavailable");
-            }
-            Ok(self.countries.get(&viewer_id).cloned())
+        async fn viewer_country(&self, viewer_id: u64) -> RawHydrationBatch<Arc<str>> {
+            self.keyed(Source::ViewerCountry, vec![viewer_id], &self.countries)
+                .await
+        }
+
+        async fn second_degree(
+            &self,
+            viewer_id: u64,
+            root_author_ids: Vec<u64>,
+        ) -> RawHydrationBatch<bool> {
+            let paths = root_author_ids
+                .iter()
+                .map(|&root| (root, self.second_degree.contains(&(root, viewer_id))))
+                .collect();
+            self.keyed(Source::Wingman, root_author_ids, &paths).await
         }
 
         fn pure_core_cache(&self) -> Option<&PureCoreFallbackCache> {

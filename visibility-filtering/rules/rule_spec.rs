@@ -3,7 +3,9 @@ use crate::models::region::allows_country;
 use crate::models::{
     AuthorLabel, LimitedEngagementReason, SafetyLabelType, TombstoneReason, ViewerProfile,
 };
+use crate::rules::context::CoreFacts;
 use crate::rules::RuleContext;
+use std::ops::Not;
 use xai_core_entities::entities::ConversationControlArm;
 use xai_visibility_filtering::models::FilteredReason;
 use xai_x_thrift::action::InterstitialReason;
@@ -19,20 +21,6 @@ pub(super) enum Condition {
     Holds(Predicate),
     Not(Predicate),
     AnyOf(&'static [Predicate]),
-    Opaque {
-        #[cfg_attr(
-            not(test),
-            expect(dead_code, reason = "read only by the table-shape tests")
-        )]
-        id: &'static str,
-        #[cfg_attr(
-            not(test),
-            expect(dead_code, reason = "read only by the table-shape tests")
-        )]
-        doc: &'static str,
-        eval: fn(&RuleContext<'_>) -> bool,
-        hydrators: Hydrators,
-    },
 }
 
 #[derive(Clone, Copy)]
@@ -53,6 +41,9 @@ pub(super) enum TweetPredicate {
     HasDmcaMedia,
     IsRetweet,
     IsSupersededEdit,
+    LegalTakedownInRequestCountry,
+    LocalLawsTakedownInRequestCountry,
+    MediaGeoRestrictedInRequestCountry,
     IsNullcast,
     IsCommunityTweet,
     HasExclusiveContent,
@@ -88,6 +79,7 @@ pub(super) enum ViewerPredicate {
     reason = "the Viewer prefix identifies the acting subject of each relationship"
 )]
 pub(super) enum RelationshipPredicate {
+    ViewerFollowsAuthor,
     ViewerBlocksAuthor,
     ViewerMutesAuthor,
     ViewerMutesRetweetsFromAuthor,
@@ -96,17 +88,17 @@ pub(super) enum RelationshipPredicate {
     ViewerIsConversationRootAuthor,
     ViewerIsInvitedToConversation,
     ViewerIsFollowedByConversationRootAuthor,
+    ViewerIsInConversationRootAuthorNetwork,
     ViewerSuperFollowsConversationRootAuthor,
     ViewerIsBlockedByAuthor,
     ViewerIsBlockedByConversationRootAuthor,
     ViewerIsInAllowedCountry,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub(super) enum Audience {
     Everyone,
     ExceptAuthor,
-    ExceptAuthorAndFollowers,
 }
 
 pub(super) enum ActionSpec {
@@ -123,29 +115,101 @@ pub(super) enum ActionSpec {
     LimitedEngagement(LimitedEngagementReason),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Truth {
+    True,
+    False,
+    Unknown { default: bool, failed: Hydrators },
+}
+
+impl Truth {
+    #[inline]
+    pub(super) fn resolves_true(self) -> bool {
+        matches!(self, Truth::True | Truth::Unknown { default: true, .. })
+    }
+
+    #[inline]
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Truth::False, _) | (_, Truth::False) => Truth::False,
+            (Truth::True, other) | (other, Truth::True) => other,
+            (
+                Truth::Unknown {
+                    default: a,
+                    failed: x,
+                },
+                Truth::Unknown {
+                    default: b,
+                    failed: y,
+                },
+            ) => Truth::Unknown {
+                default: a && b,
+                failed: x.union(y),
+            },
+        }
+    }
+
+    #[inline]
+    fn or(self, other: Self) -> Self {
+        match (self, other) {
+            (Truth::True, _) | (_, Truth::True) => Truth::True,
+            (Truth::False, other) | (other, Truth::False) => other,
+            (
+                Truth::Unknown {
+                    default: a,
+                    failed: x,
+                },
+                Truth::Unknown {
+                    default: b,
+                    failed: y,
+                },
+            ) => Truth::Unknown {
+                default: a || b,
+                failed: x.union(y),
+            },
+        }
+    }
+}
+
+impl Not for Truth {
+    type Output = Self;
+
+    #[inline]
+    fn not(self) -> Self {
+        match self {
+            Truth::True => Truth::False,
+            Truth::False => Truth::True,
+            Truth::Unknown { default, failed } => Truth::Unknown {
+                default: !default,
+                failed,
+            },
+        }
+    }
+}
+
 impl RuleClause {
-    pub(super) fn applies(&self, context: &RuleContext<'_>) -> bool {
-        self.when.iter().all(|condition| condition.holds(context))
-            && self.applies_to.admits(context)
+    pub(super) fn applies(&self, context: &RuleContext<'_>) -> Truth {
+        if !self.applies_to.admits(context.facts()) {
+            return Truth::False;
+        }
+        let mut truth = Truth::True;
+        for condition in self.when {
+            truth = truth.and(condition.truth(context));
+            if truth == Truth::False {
+                break;
+            }
+        }
+        truth
     }
 
     pub(super) const fn hydrators(&self) -> Hydrators {
-        let mut hydrators = self.applies_to.hydrators();
+        let mut hydrators = Hydrators::empty();
         let mut rest = self.when;
         while let [condition, tail @ ..] = rest {
             hydrators = hydrators.union(condition.hydrators());
             rest = tail;
         }
         hydrators
-    }
-}
-
-impl Audience {
-    pub(super) const fn hydrators(self) -> Hydrators {
-        match self {
-            Audience::Everyone | Audience::ExceptAuthor => Hydrators::empty(),
-            Audience::ExceptAuthorAndFollowers => Hydrators::of(Hydrator::Follows),
-        }
     }
 }
 
@@ -162,7 +226,6 @@ impl Condition {
                 }
                 hydrators
             }
-            Condition::Opaque { hydrators, .. } => *hydrators,
         }
     }
 }
@@ -180,32 +243,51 @@ impl Predicate {
 
 impl Audience {
     #[inline]
-    pub(super) fn admits(self, context: &RuleContext<'_>) -> bool {
-        let facts = context.facts();
+    pub(super) fn admits(self, facts: CoreFacts<'_>) -> bool {
         match self {
             Audience::Everyone => true,
             Audience::ExceptAuthor => !facts.is_author_viewer(),
-            Audience::ExceptAuthorAndFollowers => {
-                !facts.is_author_viewer()
-                    && (facts.viewer_id().is_none() || !context.viewer_follows_author())
-            }
         }
     }
 }
 
 impl Condition {
     #[inline]
-    pub(super) fn holds(&self, context: &RuleContext<'_>) -> bool {
+    fn truth(&self, context: &RuleContext<'_>) -> Truth {
         match self {
-            Condition::Holds(leaf) => leaf.holds(context),
-            Condition::Not(leaf) => !leaf.holds(context),
-            Condition::AnyOf(leaves) => leaves.iter().any(|leaf| leaf.holds(context)),
-            Condition::Opaque { eval, .. } => eval(context),
+            Condition::Holds(leaf) => leaf.truth(context),
+            Condition::Not(leaf) => !leaf.truth(context),
+            Condition::AnyOf(leaves) => {
+                let mut truth = Truth::False;
+                for leaf in *leaves {
+                    truth = truth.or(leaf.truth(context));
+                    if truth == Truth::True {
+                        break;
+                    }
+                }
+                truth
+            }
         }
     }
 }
 
 impl Predicate {
+    #[inline]
+    fn truth(self, context: &RuleContext<'_>) -> Truth {
+        let value = self.holds(context);
+        let failed = context.failed();
+        let failed = if failed.is_empty() {
+            failed
+        } else {
+            failed.intersection(self.hydrators())
+        };
+        match (failed.is_empty(), value) {
+            (false, default) => Truth::Unknown { default, failed },
+            (true, true) => Truth::True,
+            (true, false) => Truth::False,
+        }
+    }
+
     #[inline]
     pub(super) fn holds(self, context: &RuleContext<'_>) -> bool {
         match self {
@@ -254,18 +336,11 @@ macro_rules! predicates {
     (@read $context:ident ViewerProfile) => { $context.viewer_profile() };
     (@read $context:ident AuthorSafety) => { $context.author_features() };
     (@read $context:ident AuthorLabels) => { $context.author_labels() };
-    (@read $context:ident Follows) => { $context.viewer_follows_author() };
-    (@read $context:ident Blocks) => { $context.viewer_blocks_author() };
-    (@read $context:ident Mutes) => { $context.viewer_mutes_author() };
-    (@read $context:ident MuteRetweets) => { $context.viewer_mutes_retweets_from_author() };
-    (@read $context:ident BlockedByAuthor) => { $context.blocked_by_author() };
-    (@read $context:ident BlockedByReplyRoot) => { $context.blocked_by_reply_root_author() };
-    (@read $context:ident SuperFollowsExclusive) => {
-        $context.viewer_super_follows_exclusive_author()
-    };
-    (@read $context:ident RootFollowsViewer) => { $context.root_author_follows_viewer() };
-    (@read $context:ident SuperFollowsRoot) => { $context.viewer_super_follows_root_author() };
     (@read $context:ident ViewerCountry) => { $context.viewer_country() };
+    (@read $context:ident $edge:ident) => {{
+        const { assert!(Hydrator::$edge.is_edge()) };
+        $context.edge(Hydrator::$edge)
+    }};
 }
 
 predicates! {
@@ -278,6 +353,12 @@ predicates! {
         HasDmcaMedia reads Tweet => |_, tweet| tweet.has_dmca_media(),
         IsRetweet reads Tweet => |_, tweet| tweet.is_retweet(),
         IsSupersededEdit reads Tweet => |facts, tweet| tweet.is_superseded_edit(facts.tweet_id()),
+        LegalTakedownInRequestCountry reads Tweet
+            => |facts, tweet| tweet.legal_takedown_in(facts.request_country()),
+        LocalLawsTakedownInRequestCountry reads Tweet
+            => |facts, tweet| tweet.local_laws_takedown_in(facts.request_country()),
+        MediaGeoRestrictedInRequestCountry reads Tweet
+            => |facts, tweet| tweet.media_restricted_in(facts.request_country()),
         IsNullcast reads Tweet => |_, tweet| tweet.is_nullcast,
         IsCommunityTweet reads Tweet => |_, tweet| tweet.is_community_tweet,
         HasExclusiveContent reads Tweet
@@ -317,6 +398,7 @@ predicates! {
     }
 
     RelationshipPredicate {
+        ViewerFollowsAuthor reads Follows => |_, follows| follows,
         ViewerBlocksAuthor reads Blocks => |_, blocks| blocks,
         ViewerMutesAuthor reads Mutes => |_, mutes| mutes,
         ViewerMutesRetweetsFromAuthor reads MuteRetweets => |_, mutes| mutes,
@@ -340,9 +422,11 @@ predicates! {
                 .is_some_and(|(control, viewer_id)| control.invited_user_ids.contains(&viewer_id))
         },
         ViewerIsFollowedByConversationRootAuthor reads RootFollowsViewer
-            => |_, follows| follows == Some(true),
+            => |_, follows| follows,
+        ViewerIsInConversationRootAuthorNetwork reads (RootFollowsViewer, RootFollowsViewerSecondDegree)
+            => |_, (first, second)| first || second,
         ViewerSuperFollowsConversationRootAuthor reads SuperFollowsRoot
-            => |_, super_follows| super_follows == Some(true),
+            => |_, super_follows| super_follows,
         ViewerIsBlockedByAuthor reads BlockedByAuthor => |_, blocked| blocked,
         ViewerIsBlockedByConversationRootAuthor reads BlockedByReplyRoot => |_, blocked| blocked,
         ViewerIsInAllowedCountry reads (ConversationControl, ViewerCountry)
@@ -359,7 +443,7 @@ mod tests {
     use super::*;
     use crate::models::{ConversationControlFeatures, HydratedTweetCandidate, ViewerFeatures};
     use crate::rules::fixtures::{candidate, logged_out_viewer, viewer, VIEWER_ID};
-    use crate::rules::test_context;
+    use crate::rules::{holds_narrowed, test_context};
     use xai_core_entities::entities::ConversationControl;
 
     const ROOT_AUTHOR_ID: u64 = 4242;
@@ -367,10 +451,11 @@ mod tests {
     fn controlled(
         arm: ConversationControlArm,
         invited_user_ids: Vec<u64>,
-        root_author_follows_viewer: Option<bool>,
-        viewer_super_follows_root_author: Option<bool>,
+        edges: &[Hydrator],
     ) -> HydratedTweetCandidate {
-        candidate()
+        edges
+            .iter()
+            .fold(candidate(), |candidate, &edge| candidate.with_edge(edge))
             .with_conversation_control(ConversationControlFeatures {
                 control: ConversationControl {
                     arm,
@@ -379,19 +464,9 @@ mod tests {
                     invite_via_mention: None,
                     allowed_country_codes: vec![],
                 },
-                root_author_follows_viewer,
-                viewer_super_follows_root_author,
                 viewer_country: None,
             })
             .build()
-    }
-
-    fn holds_narrowed(
-        predicate: Predicate,
-        viewer: &ViewerFeatures,
-        candidate: &HydratedTweetCandidate,
-    ) -> bool {
-        predicate.holds(&test_context(viewer, candidate).hydrated_by(predicate.hydrators()))
     }
 
     #[test]
@@ -401,10 +476,10 @@ mod tests {
             ViewerIsConversationRootAuthor, ViewerIsFollowedByConversationRootAuthor,
             ViewerIsInvitedToConversation, ViewerSuperFollowsConversationRootAuthor,
         };
-        let community = controlled(Community, vec![], Some(true), None);
-        let subscribers = controlled(Subscribers, vec![], None, Some(true));
-        let invitation = controlled(ByInvitation, vec![VIEWER_ID], None, None);
-        let unknown = controlled(Community, vec![], None, None);
+        let community = controlled(Community, vec![], &[Hydrator::RootFollowsViewer]);
+        let subscribers = controlled(Subscribers, vec![], &[Hydrator::SuperFollowsRoot]);
+        let invitation = controlled(ByInvitation, vec![VIEWER_ID], &[]);
+        let unrelated = controlled(Community, vec![], &[]);
         let uncontrolled = candidate().build();
         let root_author = viewer(ROOT_AUTHOR_ID);
         let viewer = viewer(VIEWER_ID);
@@ -449,7 +524,7 @@ mod tests {
             (
                 Predicate::Relationship(ViewerIsFollowedByConversationRootAuthor),
                 &viewer,
-                &unknown,
+                &unrelated,
                 false,
             ),
             (
@@ -461,7 +536,7 @@ mod tests {
             (
                 Predicate::Relationship(ViewerSuperFollowsConversationRootAuthor),
                 &viewer,
-                &unknown,
+                &unrelated,
                 false,
             ),
             (

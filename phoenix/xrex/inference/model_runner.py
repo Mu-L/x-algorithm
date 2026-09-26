@@ -4495,7 +4495,7 @@ class RetrievalModelRunner(
     ) -> tuple[int, ...]:
         launch = tuple(ds.value for ds in self.retrieval_dataset_types)
         table = ranges if ranges is not None else self._dataset_ranges_by_type
-        if not table:
+        if not table or getattr(self, "enable_topic_filter", False):
             return launch
         home = RetrievalDataset.HOME.value
         cold = RetrievalDataset.HOME_COLD.value

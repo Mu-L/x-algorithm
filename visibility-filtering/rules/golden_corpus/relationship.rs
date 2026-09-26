@@ -1,24 +1,19 @@
 use super::builders::controlled_root;
 use super::{Role, Row};
-use crate::models::{
-    HydratedTweetCandidate, LimitedEngagementReason, ViewerAuthorRelationship, ViewerBlockedBy,
+use crate::hydration::Hydrator::{
+    BlockedByAuthor, BlockedByReplyRoot, Blocks, MuteRetweets, Mutes,
 };
+use crate::models::LimitedEngagementReason;
 use crate::rules::fixtures::{allow, candidate, dropped, limited};
 use crate::rules::SafetyLevel::{TimelineHome, TimelineHomeHydration};
 use xai_core_entities::entities::ConversationControlArm;
 use xai_visibility_filtering::models::FilteredReason;
 
 pub(super) fn rows() -> Vec<Row> {
-    let blocked_by = |author, root_author| {
-        candidate().blocked_by(ViewerBlockedBy {
-            author,
-            root_author,
-        })
-    };
     vec![
         Row {
             name: "viewer_blocks_author",
-            post: relationship_candidate(|r| r.viewer_blocks_author = true),
+            post: candidate().with_edge(Blocks).build(),
             expect: vec![(
                 TimelineHome,
                 Role::NonFollower,
@@ -27,7 +22,7 @@ pub(super) fn rows() -> Vec<Row> {
         },
         Row {
             name: "viewer_mutes_author",
-            post: relationship_candidate(|r| r.viewer_mutes_author = true),
+            post: candidate().with_edge(Mutes).build(),
             expect: vec![(
                 TimelineHome,
                 Role::NonFollower,
@@ -36,10 +31,7 @@ pub(super) fn rows() -> Vec<Row> {
         },
         Row {
             name: "viewer_blocks_and_mutes_author",
-            post: relationship_candidate(|r| {
-                r.viewer_blocks_author = true;
-                r.viewer_mutes_author = true;
-            }),
+            post: candidate().with_edge(Blocks).with_edge(Mutes).build(),
             expect: vec![(
                 TimelineHome,
                 Role::NonFollower,
@@ -48,16 +40,7 @@ pub(super) fn rows() -> Vec<Row> {
         },
         Row {
             name: "muted_retweets_retweet",
-            post: {
-                let relationship = ViewerAuthorRelationship {
-                    viewer_mutes_retweets_from_author: true,
-                    ..Default::default()
-                };
-                candidate()
-                    .with_relationship(relationship)
-                    .retweet_of(2)
-                    .build()
-            },
+            post: candidate().with_edge(MuteRetweets).retweet_of(2).build(),
             expect: vec![(
                 TimelineHome,
                 Role::NonFollower,
@@ -66,12 +49,15 @@ pub(super) fn rows() -> Vec<Row> {
         },
         Row {
             name: "muted_retweets_original",
-            post: relationship_candidate(|r| r.viewer_mutes_retweets_from_author = true),
+            post: candidate().with_edge(MuteRetweets).build(),
             expect: vec![(TimelineHome, Role::NonFollower, allow())],
         },
         Row {
             name: "author_and_root_author_block",
-            post: blocked_by(true, true).build(),
+            post: candidate()
+                .with_edge(BlockedByAuthor)
+                .with_edge(BlockedByReplyRoot)
+                .build(),
             expect: vec![(
                 TimelineHomeHydration,
                 Role::NonFollower,
@@ -83,12 +69,12 @@ pub(super) fn rows() -> Vec<Row> {
         },
         Row {
             name: "author_block",
-            post: blocked_by(true, false).build(),
+            post: candidate().with_edge(BlockedByAuthor).build(),
             expect: vec![(TimelineHomeHydration, Role::Author, allow())],
         },
         Row {
             name: "root_author_block",
-            post: blocked_by(false, true).build(),
+            post: candidate().with_edge(BlockedByReplyRoot).build(),
             expect: vec![(
                 TimelineHomeHydration,
                 Role::Author,
@@ -100,7 +86,8 @@ pub(super) fn rows() -> Vec<Row> {
         },
         Row {
             name: "root_author_block_community_conversation",
-            post: blocked_by(false, true)
+            post: candidate()
+                .with_edge(BlockedByReplyRoot)
                 .with_conversation_control(controlled_root(ConversationControlArm::Community))
                 .build(),
             expect: vec![(
@@ -113,10 +100,4 @@ pub(super) fn rows() -> Vec<Row> {
             )],
         },
     ]
-}
-
-fn relationship_candidate(set: fn(&mut ViewerAuthorRelationship)) -> HydratedTweetCandidate {
-    let mut relationship = ViewerAuthorRelationship::default();
-    set(&mut relationship);
-    candidate().with_relationship(relationship).build()
 }

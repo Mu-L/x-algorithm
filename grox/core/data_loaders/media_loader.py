@@ -722,9 +722,9 @@ class MediaLoader:
         try:
             shot_key_frames = await ShotKeyFramesExtractor.extract(
                 video_bytes,
-                window_sec=cfg.key_frames_window_seconds,
-                max_fps=cfg.key_frames_max_fps,
-                max_key_frames=cfg.key_frames_max,
+                window_sec=cfg.shot_key_frames_window_seconds,
+                max_fps=cfg.shot_key_frames_max_fps,
+                max_key_frames=cfg.shot_key_frames_max,
                 tile_size=tile_size,
             )
             frames_label = str(len(shot_key_frames))

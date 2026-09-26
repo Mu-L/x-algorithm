@@ -1,13 +1,17 @@
+use anyhow::Context;
 use std::collections::HashSet;
 use tonic::async_trait;
 use tracing::warn;
-use xai_flock_client::FlockClient;
+use xai_flock_client::{FlockClient, FlockClientConfig, FlockTlsConfig};
 use xai_flock_proto::{
     EdgeState, LongList, Page, QueryTerm, Results, SelectOperation, SelectOperationType,
     SelectQuery, SelectRequest,
 };
+use xai_x_rpc::balanced_channel::LbPolicy;
 
 const REVERSE_EDGE_CHUNK_SIZE: usize = 500;
+
+const FLOCK_APERTURE_SIZE: usize = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
@@ -57,18 +61,7 @@ pub trait SocialgraphClient: Send + Sync {
         &self,
         viewer_id: u64,
         queries: &[EdgeQuery],
-    ) -> Option<Vec<HashSet<u64>>>;
-}
-
-#[cfg(test)]
-pub(crate) struct NoEdges;
-
-#[cfg(test)]
-#[async_trait]
-impl SocialgraphClient for NoEdges {
-    async fn select_edges(&self, _: u64, queries: &[EdgeQuery]) -> Option<Vec<HashSet<u64>>> {
-        Some(vec![HashSet::new(); queries.len()])
-    }
+    ) -> Option<Vec<Option<HashSet<u64>>>>;
 }
 
 fn decode_packed_ids(packed: &[u8]) -> HashSet<u64> {
@@ -132,16 +125,18 @@ fn select_request(viewer_id: u64, queries: &[EdgeQuery]) -> (SelectRequest, Vec<
     (request, counts)
 }
 
-fn decode_edge_sets(counts: &[usize], results: Vec<Results>) -> Vec<HashSet<u64>> {
+fn decode_edge_sets(counts: &[usize], results: Vec<Results>) -> Vec<Option<HashSet<u64>>> {
     let mut results = results.into_iter();
     counts
         .iter()
         .map(|&count| {
-            results
-                .by_ref()
-                .take(count)
-                .flat_map(|r| decode_packed_ids(&r.ids))
-                .collect()
+            let mut set = HashSet::new();
+            let mut answered = 0;
+            for chunk in results.by_ref().take(count) {
+                answered += 1;
+                set.extend(decode_packed_ids(&chunk.ids));
+            }
+            (answered == count).then_some(set)
         })
         .collect()
 }
@@ -156,10 +151,27 @@ impl ProdSocialgraphClient {
         ca_cert_path: &str,
         client_cert_path: &str,
         client_key_path: &str,
+        deterministic_aperture: bool,
     ) -> anyhow::Result<Self> {
-        let flock_client =
-            FlockClient::from_s2s(datacenter, ca_cert_path, client_cert_path, client_key_path)
-                .await?;
+        let wilyns = xai_wily::WilyNs::new(xai_wily::WilyConfig {
+            zone: datacenter.to_string(),
+            ..Default::default()
+        })
+        .context("Failed to create WilyNS for Flock")?;
+        let config = FlockClientConfig {
+            tls: Some(FlockTlsConfig::from_s2s(
+                ca_cert_path,
+                client_cert_path,
+                client_key_path,
+                datacenter,
+            )),
+            num_endpoints: usize::MAX,
+            aperture_size: Some(FLOCK_APERTURE_SIZE),
+            deterministic_aperture,
+            lb_policy: Some(LbPolicy::least_request()),
+            ..Default::default()
+        };
+        let flock_client = FlockClient::with_config(wilyns, config).await?;
         Ok(Self { flock_client })
     }
 }
@@ -170,7 +182,7 @@ impl SocialgraphClient for ProdSocialgraphClient {
         &self,
         viewer_id: u64,
         queries: &[EdgeQuery],
-    ) -> Option<Vec<HashSet<u64>>> {
+    ) -> Option<Vec<Option<HashSet<u64>>>> {
         let (request, counts) = select_request(viewer_id, queries);
         let mut request = tonic::Request::new(request);
         xai_x_rpc::apply_call_deadline(&mut request);
@@ -247,14 +259,18 @@ mod tests {
     }
 
     #[test]
-    fn decode_edge_sets_unions_each_querys_chunks_and_missing_slots_fail_open() {
+    fn decode_edge_sets_unions_each_querys_chunks_and_marks_missing_slots() {
         assert_eq!(
             decode_edge_sets(&[2, 0, 1], vec![pack(&[1]), pack(&[2]), pack(&[3])]),
-            vec![HashSet::from([1, 2]), HashSet::new(), HashSet::from([3])]
+            vec![
+                Some(HashSet::from([1, 2])),
+                Some(HashSet::new()),
+                Some(HashSet::from([3]))
+            ]
         );
         assert_eq!(
-            decode_edge_sets(&[1, 1], vec![pack(&[4])]),
-            vec![HashSet::from([4]), HashSet::new()]
+            decode_edge_sets(&[1, 2], vec![pack(&[4]), pack(&[5])]),
+            vec![Some(HashSet::from([4])), None]
         );
     }
 }

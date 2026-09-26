@@ -164,8 +164,13 @@ fn record_tracked_ids(candidates: &[PostCandidate], raw: &str) {
     }
 }
 
-fn is_phoenix_moe(c: &PostCandidate) -> bool {
-    c.served_type == Some(pb::ServedType::ForYouPhoenixRetrievalMoe)
+fn is_arm_gated_retrieval(c: &PostCandidate) -> bool {
+    matches!(
+        c.served_type,
+        Some(
+            pb::ServedType::ForYouPhoenixRetrievalMoe | pb::ServedType::ForYouPhoenixRetrievalCold
+        )
+    )
 }
 
 pub(crate) fn cold_start_base_eligible(c: &PostCandidate, follower_cap: i64) -> bool {
@@ -205,7 +210,7 @@ fn apply_moe_ranking_policy(
     let mut out = scores.to_vec();
     let mut zeroed = vec![false; scores.len()];
     for (i, c) in candidates.iter().enumerate() {
-        if !is_phoenix_moe(c) {
+        if !is_arm_gated_retrieval(c) {
             continue;
         }
         let keep = matches!(arm, ViewerArm::Treatment) && corpus[i] == AuthorCorpus::Treatment;
@@ -231,8 +236,8 @@ fn cold_start_target(params: &ColdStartParams, scores: &[f64]) -> Option<(usize,
 
 fn cold_start_corpus_eligible(arm: ViewerArm, c: &PostCandidate, corpus: AuthorCorpus) -> bool {
     match arm {
-        ViewerArm::Holdout => !is_phoenix_moe(c),
-        ViewerArm::Control => corpus == AuthorCorpus::Control && !is_phoenix_moe(c),
+        ViewerArm::Holdout => !is_arm_gated_retrieval(c),
+        ViewerArm::Control => corpus == AuthorCorpus::Control && !is_arm_gated_retrieval(c),
         ViewerArm::Treatment => corpus == AuthorCorpus::Treatment,
     }
 }
@@ -333,7 +338,11 @@ fn apply_cold_start(
 
     let mut effective = scores.to_vec();
     effective[best_idx] = effective[best_idx].max(target);
-    record_cold_started_posts(is_phoenix_moe(&candidates[best_idx]), arm.as_str(), 1);
+    record_cold_started_posts(
+        is_arm_gated_retrieval(&candidates[best_idx]),
+        arm.as_str(),
+        1,
+    );
     (effective, Some(best_idx))
 }
 
@@ -648,6 +657,36 @@ rust_home_mixer:
         let result =
             author_cold_start.apply(&codivert_query(false, false), &candidates, &[5.0, 40.0]);
         assert_eq!(result, vec![40.0, 0.0]);
+    }
+
+    fn cold_retrieval_candidate(
+        author_id: u64,
+        age: Duration,
+        view_count_on_home: u64,
+    ) -> PostCandidate {
+        PostCandidate {
+            served_type: Some(pb::ServedType::ForYouPhoenixRetrievalCold),
+            ..cold_start_candidate(author_id, age, view_count_on_home)
+        }
+    }
+
+    #[test]
+    fn cold_retrieval_is_gated_like_moe() {
+        let author_cold_start = cold_start_with_arms(vec![2], vec![1]);
+        let candidates = vec![
+            cold_start_candidate(1, minutes(10), 3),
+            cold_retrieval_candidate(2, minutes(20), 3),
+        ];
+        let scores = [5.0, 40.0];
+
+        let holdout = author_cold_start.apply(&codivert_query(false, false), &candidates, &scores);
+        assert_eq!(holdout, vec![40.0, 0.0]);
+
+        let control = author_cold_start.apply(&codivert_query(true, false), &candidates, &scores);
+        assert_eq!(control, vec![40.0, 0.0]);
+
+        let treatment = author_cold_start.apply(&codivert_query(false, true), &candidates, &scores);
+        assert_eq!(treatment, vec![5.0, 40.0]);
     }
 
     #[test]

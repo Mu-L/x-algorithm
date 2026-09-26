@@ -1,5 +1,8 @@
 use super::builders::{controlled_root, read_only_viewer};
 use super::{Role, Row};
+use crate::hydration::Hydrator::{
+    RootFollowsViewer, RootFollowsViewerSecondDegree, SuperFollowsRoot,
+};
 use crate::models::{
     ConversationControlFeatures, HydratedTweetCandidate, LimitedEngagementReason, SafetyLabelType,
     ViewerProfile,
@@ -174,26 +177,34 @@ pub(super) fn rows() -> Vec<Row> {
         },
         Row {
             name: "community_conversation_followed_viewer",
-            post: controlled_candidate(ConversationControlFeatures {
-                root_author_follows_viewer: Some(true),
-                ..controlled_root(Community)
-            }),
+            post: candidate()
+                .with_edge(RootFollowsViewer)
+                .with_conversation_control(controlled_root(Community))
+                .build(),
             expect: vec![hydration(Role::NonFollower, allow())],
         },
         Row {
             name: "my_network_conversation_followed_viewer",
-            post: controlled_candidate(ConversationControlFeatures {
-                root_author_follows_viewer: Some(true),
-                ..controlled_root(MyNetwork)
-            }),
+            post: candidate()
+                .with_edge(RootFollowsViewer)
+                .with_conversation_control(controlled_root(MyNetwork))
+                .build(),
+            expect: vec![hydration(Role::NonFollower, allow())],
+        },
+        Row {
+            name: "my_network_conversation_second_degree_viewer",
+            post: candidate()
+                .with_edge(RootFollowsViewerSecondDegree)
+                .with_conversation_control(controlled_root(MyNetwork))
+                .build(),
             expect: vec![hydration(Role::NonFollower, allow())],
         },
         Row {
             name: "subscribers_conversation_super_follower",
-            post: controlled_candidate(ConversationControlFeatures {
-                viewer_super_follows_root_author: Some(true),
-                ..controlled_root(Subscribers)
-            }),
+            post: candidate()
+                .with_edge(SuperFollowsRoot)
+                .with_conversation_control(controlled_root(Subscribers))
+                .build(),
             expect: vec![hydration(Role::NonFollower, allow())],
         },
         Row {
@@ -238,17 +249,15 @@ fn co_root(
     allowed_country_codes: &[&str],
     viewer_country: Option<&str>,
 ) -> ConversationControlFeatures {
-    let root = controlled_root(ConversationControlArm::Co);
     ConversationControlFeatures {
         control: ConversationControl {
             allowed_country_codes: allowed_country_codes
                 .iter()
                 .map(|code| (*code).to_string())
                 .collect(),
-            ..root.control
+            ..controlled_root(ConversationControlArm::Co).control
         },
         viewer_country: viewer_country.map(Into::into),
-        ..root
     }
 }
 

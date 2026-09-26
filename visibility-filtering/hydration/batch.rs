@@ -1,64 +1,18 @@
-use crate::models::{AuthorId, TweetId};
+use crate::models::TweetId;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::hash::Hash;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Completeness<V> {
-    Complete(V),
-    Incomplete(V),
-}
-
-impl<V> Completeness<V> {
-    pub fn new(complete: bool, value: V) -> Self {
-        if complete {
-            Self::Complete(value)
-        } else {
-            Self::Incomplete(value)
-        }
-    }
-
-    pub fn is_complete(&self) -> bool {
-        matches!(self, Self::Complete(_))
-    }
-
-    pub fn value(&self) -> &V {
-        match self {
-            Self::Complete(value) | Self::Incomplete(value) => value,
-        }
-    }
-
-    pub fn into_value(self) -> V {
-        match self {
-            Self::Complete(value) | Self::Incomplete(value) => value,
-        }
-    }
-
-    pub fn map<U>(self, f: impl FnOnce(V) -> U) -> Completeness<U> {
-        match self {
-            Self::Complete(value) => Completeness::Complete(f(value)),
-            Self::Incomplete(value) => Completeness::Incomplete(f(value)),
-        }
-    }
-}
-
-impl<V: Default> Default for Completeness<V> {
-    fn default() -> Self {
-        Self::Incomplete(V::default())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HydrationError {
-    MissingResponse,
     Timeout,
-    Rpc(String),
+    Error,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Hydrated<V> {
     Found(V),
+    Partial(V),
     NotFound,
     Failed(HydrationError),
 }
@@ -66,18 +20,29 @@ pub(crate) enum Hydrated<V> {
 impl<V> Hydrated<V> {
     pub(crate) fn value(&self) -> Option<&V> {
         match self {
-            Hydrated::Found(value) => Some(value),
+            Hydrated::Found(value) | Hydrated::Partial(value) => Some(value),
             Hydrated::NotFound | Hydrated::Failed(_) => None,
         }
     }
+
+    pub(crate) fn into_value(self) -> Option<V> {
+        match self {
+            Hydrated::Found(value) | Hydrated::Partial(value) => Some(value),
+            Hydrated::NotFound | Hydrated::Failed(_) => None,
+        }
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        matches!(self, Hydrated::Found(_) | Hydrated::NotFound)
+    }
 }
 
-impl<V, E: Display> From<Result<Option<V>, E>> for Hydrated<V> {
+impl<V, E> From<Result<Option<V>, E>> for Hydrated<V> {
     fn from(result: Result<Option<V>, E>) -> Self {
         match result {
             Ok(Some(value)) => Hydrated::Found(value),
             Ok(None) => Hydrated::NotFound,
-            Err(e) => Hydrated::Failed(HydrationError::Rpc(e.to_string())),
+            Err(_) => Hydrated::Failed(HydrationError::Error),
         }
     }
 }
@@ -87,7 +52,7 @@ pub(crate) struct HydrationBatch<K, V> {
 }
 
 pub(crate) type TweetHydrationBatch<V> = HydrationBatch<TweetId, V>;
-pub(crate) type AuthorHydrationBatch<V> = HydrationBatch<AuthorId, V>;
+pub(crate) type RawHydrationBatch<V> = HydrationBatch<u64, V>;
 
 impl<K: Eq + Hash, V> HydrationBatch<K, V> {
     pub(crate) fn empty() -> Self {
@@ -96,7 +61,7 @@ impl<K: Eq + Hash, V> HydrationBatch<K, V> {
         }
     }
 
-    pub(crate) fn from_results<E: Display>(
+    pub(crate) fn from_results<E>(
         expected: impl IntoIterator<Item = K>,
         mut results: HashMap<K, Result<Option<V>, E>>,
     ) -> Self {
@@ -104,7 +69,7 @@ impl<K: Eq + Hash, V> HydrationBatch<K, V> {
             results
                 .remove(key)
                 .map(Hydrated::from)
-                .unwrap_or(Hydrated::Failed(HydrationError::MissingResponse))
+                .unwrap_or(Hydrated::Failed(HydrationError::Error))
         })
     }
 
@@ -139,8 +104,11 @@ impl<K: Eq + Hash, V> HydrationBatch<K, V> {
         self.results.get(key)
     }
 
-    pub(crate) fn is_failed(&self, key: &K) -> bool {
-        matches!(self.hydrated(key), None | Some(Hydrated::Failed(_)))
+    pub(crate) fn incomplete_keys(&self) -> impl Iterator<Item = &K> {
+        self.results
+            .iter()
+            .filter(|(_, hydrated)| !hydrated.is_complete())
+            .map(|(key, _)| key)
     }
 
     pub(crate) fn into_hydrated(self) -> HashMap<K, Hydrated<V>> {
@@ -169,6 +137,7 @@ impl<K: Eq + Hash, V> HydrationBatch<K, V> {
                 .map(|(key, hydrated)| {
                     let hydrated = match hydrated {
                         Hydrated::Found(value) => Hydrated::Found(f(value)),
+                        Hydrated::Partial(value) => Hydrated::Partial(f(value)),
                         Hydrated::NotFound => Hydrated::NotFound,
                         Hydrated::Failed(e) => Hydrated::Failed(e),
                     };
@@ -205,9 +174,7 @@ mod tests {
         assert_eq!(batch.hydrated(&2), Some(&Hydrated::NotFound));
         assert_eq!(
             batch.hydrated(&3),
-            Some(&Hydrated::Failed(HydrationError::Rpc(
-                "backend unavailable".into()
-            )))
+            Some(&Hydrated::Failed(HydrationError::Error))
         );
     }
 
@@ -218,7 +185,7 @@ mod tests {
 
         assert_eq!(
             batch.hydrated(&2),
-            Some(&Hydrated::Failed(HydrationError::MissingResponse))
+            Some(&Hydrated::Failed(HydrationError::Error))
         );
     }
 
@@ -237,8 +204,17 @@ mod tests {
     }
 
     #[test]
-    fn defaulted_completeness_is_incomplete_and_absent_keys_are_failed() {
-        assert_eq!(Completeness::<u32>::default(), Completeness::Incomplete(0));
-        assert!(HydrationBatch::<u64, u32>::empty().is_failed(&1));
+    fn only_found_and_not_found_keys_are_complete() {
+        let batch = HydrationBatch::from_hydrated(HashMap::from([
+            (1, Hydrated::Found(7)),
+            (2, Hydrated::NotFound),
+            (3, Hydrated::Partial(7)),
+            (4, Hydrated::Failed(HydrationError::Timeout)),
+        ]));
+
+        let mut incomplete: Vec<u64> = batch.incomplete_keys().copied().collect();
+        incomplete.sort_unstable();
+        assert_eq!(incomplete, [3, 4]);
+        assert_eq!(batch.get(&3), Some(&7));
     }
 }

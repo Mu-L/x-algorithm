@@ -177,6 +177,9 @@ notification_engagement_to_action_types = {
     "IsNotificationSent": [
         "ClientNotificationSent",
     ],
+    "IsNotificationSettingOptedOut": [
+        "ClientNotificationSettingOptOut",
+    ],
 }
 
 SEARCH_RELEVANCE_ACTION_INDICES = [

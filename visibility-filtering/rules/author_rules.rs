@@ -19,6 +19,10 @@ const fn author_drop(
     }
 }
 
+const NOT_FOLLOWER: Condition = Condition::Not(Predicate::Relationship(
+    RelationshipPredicate::ViewerFollowsAuthor,
+));
+
 pub(super) const AUTHOR_STATE_DROPS: &[RuleClause] = &[
     author_drop(
         "SuspendedAuthorRule",
@@ -54,11 +58,12 @@ pub(super) const AUTHOR_STATE_DROPS: &[RuleClause] = &[
     ),
     author_drop(
         "ProtectedAuthorDropRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::IsProtected,
-        ))],
+        &[
+            Condition::Holds(Predicate::Author(AuthorPredicate::IsProtected)),
+            NOT_FOLLOWER,
+        ],
         FilteredReason::AuthorIsProtected,
-        Audience::ExceptAuthorAndFollowers,
+        Audience::ExceptAuthor,
     ),
 ];
 
@@ -159,19 +164,25 @@ pub(super) const OON_USER_LABEL_DROPS: &[RuleClause] = &[
     ),
     author_drop(
         "AbusiveHighRecallRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::AbusiveHighRecall),
-        ))],
+        &[
+            Condition::Holds(Predicate::Author(AuthorPredicate::HasUserLabel(
+                AuthorLabel::AbusiveHighRecall,
+            ))),
+            NOT_FOLLOWER,
+        ],
         FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthorAndFollowers,
+        Audience::ExceptAuthor,
     ),
     author_drop(
         "DoNotAmplifyNonFollowerRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::DoNotAmplify),
-        ))],
+        &[
+            Condition::Holds(Predicate::Author(AuthorPredicate::HasUserLabel(
+                AuthorLabel::DoNotAmplify,
+            ))),
+            NOT_FOLLOWER,
+        ],
         FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthorAndFollowers,
+        Audience::ExceptAuthor,
     ),
 ];
 

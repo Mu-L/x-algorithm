@@ -1,8 +1,8 @@
+use crate::hydration::Hydrator;
 use crate::models::{
     AuthorFeatures, AuthorLabel, ConversationControlFeatures, Decided, HydratedTweetCandidate,
     LimitedEngagement, LimitedEngagementReason, MediaInterstitial, SafetyLabelMap, SafetyLabelType,
-    TweetFeatures, Verdict, Viewer, ViewerAuthorRelationship, ViewerBlockedBy, ViewerFeatures,
-    ViewerProfile, Withholding,
+    TweetFeatures, Verdict, Viewer, ViewerFeatures, ViewerProfile, Withholding,
 };
 use std::collections::HashSet;
 use xai_core_entities::entities::{ConversationControl, ConversationControlArm};
@@ -109,8 +109,6 @@ pub(super) fn conversation_control(
             invite_via_mention: None,
             allowed_country_codes: vec![],
         },
-        root_author_follows_viewer: None,
-        viewer_super_follows_root_author: None,
         viewer_country: None,
     }
 }
@@ -157,13 +155,9 @@ impl CandidateBuilder {
         self
     }
 
-    pub(crate) fn with_relationship(mut self, relationship: ViewerAuthorRelationship) -> Self {
-        self.candidate.relationship = relationship;
-        self
-    }
-
-    pub(crate) fn blocked_by(mut self, blocked_by: ViewerBlockedBy) -> Self {
-        self.candidate.blocked_by = blocked_by;
+    pub(crate) fn with_edge(mut self, edge: Hydrator) -> Self {
+        debug_assert!(edge.is_edge(), "{edge:?} is not an edge node");
+        self.candidate.edges = self.candidate.edges.with(edge);
         self
     }
 

@@ -1,4 +1,3 @@
-use crate::hydration::{Hydrator, Hydrators};
 use crate::models::{AuthorLabel, LimitedEngagementReason, SafetyLabelType};
 use crate::rules::rule_spec::{
     ActionSpec, Audience, AuthorPredicate, Condition, Predicate, RelationshipPredicate, RuleClause,
@@ -389,7 +388,7 @@ pub(super) const LIMIT_REPLIES_CONVERSATION_RULES: &[RuleClause] = &[
             NOT_CONVERSATION_ROOT_AUTHOR,
             NOT_INVITED_TO_CONVERSATION,
             Condition::Not(Predicate::Relationship(
-                RelationshipPredicate::ViewerIsFollowedByConversationRootAuthor,
+                RelationshipPredicate::ViewerIsInConversationRootAuthorNetwork,
             )),
         ],
     ),
@@ -564,33 +563,17 @@ pub(super) const STALE_TWEET_DROP: &[RuleClause] = &[RuleClause {
 pub(super) const TAKEDOWN_DROPS: &[RuleClause] = &[
     RuleClause {
         rule_name: "DropLegalTakendownPostRule",
-        when: &[Condition::Opaque {
-            id: "legal_takedown_in_viewer_country",
-            doc: "a LegalRequest (any code but xy) or UnspecifiedReason takedown names \
-                  the viewer's request country or a worldwide code (xx/xy); Dmca counts as xy",
-            eval: |context| {
-                context
-                    .tweet_features()
-                    .legal_takedown_in(context.facts().request_country())
-            },
-            hydrators: Hydrators::of(Hydrator::Tweet),
-        }],
+        when: &[Condition::Holds(Predicate::Tweet(
+            TweetPredicate::LegalTakedownInRequestCountry,
+        ))],
         applies_to: Audience::ExceptAuthor,
         action: ActionSpec::Drop(FilteredReason::UnspecifiedReason),
     },
     RuleClause {
         rule_name: "DropLocalLawsTakendownPostRule",
-        when: &[Condition::Opaque {
-            id: "local_laws_takedown_in_viewer_country",
-            doc: "a BystanderReport takedown names the viewer's request country; \
-                  worldwide codes (xx/xy) do not count",
-            eval: |context| {
-                context
-                    .tweet_features()
-                    .local_laws_takedown_in(context.facts().request_country())
-            },
-            hydrators: Hydrators::of(Hydrator::Tweet),
-        }],
+        when: &[Condition::Holds(Predicate::Tweet(
+            TweetPredicate::LocalLawsTakedownInRequestCountry,
+        ))],
         applies_to: Audience::ExceptAuthor,
         action: ActionSpec::Drop(FilteredReason::UnspecifiedReason),
     },
@@ -614,17 +597,9 @@ pub(super) const RECS_MEDIA_DROPS: &[RuleClause] = &[
     },
     RuleClause {
         rule_name: "DropTweetsWithGeoRestrictedMediaRule",
-        when: &[Condition::Opaque {
-            id: "media_geo_restricted_in_viewer_country",
-            doc: "the media geo allow-list is non-empty and omits the viewer's \
-                  request country (xx when absent), or the deny-list names it",
-            eval: |context| {
-                context
-                    .tweet_features()
-                    .media_restricted_in(context.facts().request_country())
-            },
-            hydrators: Hydrators::of(Hydrator::Tweet),
-        }],
+        when: &[Condition::Holds(Predicate::Tweet(
+            TweetPredicate::MediaGeoRestrictedInRequestCountry,
+        ))],
         applies_to: Audience::Everyone,
         action: ActionSpec::Drop(FilteredReason::UnspecifiedReason),
     },

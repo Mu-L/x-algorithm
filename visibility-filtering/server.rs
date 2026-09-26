@@ -77,24 +77,49 @@ impl vf_pb::VisibilityFilteringService for VFServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_core_entities::entities::PureCoreData;
-    use xai_core_entities::gizmoduck_client::MockGizmoduckClient;
-    use xai_core_entities::tweet_entity_service_client::MockTESClient;
+    use crate::filter::FilterTweets;
+    use crate::hydration::sources::InMemorySources;
+    use crate::rules::RuleEngine;
+    use crate::safety_label_source::lookup::{ManhattanLookup, RemoteSource, TwemcacheLookup};
+    use crate::safety_label_source::types::{ManhattanOutcome, TwemcacheOutcome};
+    use crate::safety_label_source::SafetyLabelSource;
+    use std::collections::HashMap;
     use xai_visibility_filtering::evaluated::EvaluationResult;
     use xai_visibility_filtering::vf_client::XaiVfClient;
     use xai_visibility_filtering_proto::visibility_filtering_service_client::VisibilityFilteringServiceClient;
     use xai_x_service_builder::XService;
     use xai_x_thrift::action::{self, Action};
 
-    fn server(tes: MockTESClient) -> VFServer {
-        let filter_tweets = Arc::new(crate::filter::test_support::filter_tweets_with_clients(
-            Arc::new(tes),
-            Arc::new(MockGizmoduckClient::default()),
+    struct NoLabels;
+
+    #[tonic::async_trait]
+    impl TwemcacheLookup for NoLabels {
+        async fn get(&self, ids: &[u64]) -> HashMap<u64, TwemcacheOutcome> {
+            ids.iter().map(|&id| (id, TwemcacheOutcome::Miss)).collect()
+        }
+    }
+
+    #[tonic::async_trait]
+    impl ManhattanLookup for NoLabels {
+        async fn get(&self, ids: &[u64]) -> HashMap<u64, ManhattanOutcome> {
+            ids.iter()
+                .map(|&id| (id, ManhattanOutcome::Resolved(Default::default())))
+                .collect()
+        }
+    }
+
+    fn server(sources: InMemorySources) -> VFServer {
+        let filter_tweets = Arc::new(FilterTweets::new(
+            Arc::new(sources),
+            RuleEngine::for_tests(),
         ));
+        let labels = Arc::new(NoLabels);
         VFServer::from_endpoints(
             EvaluateTweetsEndpoint::new(filter_tweets.clone()),
             FilterTweetsEndpoint::new(filter_tweets, None),
-            GetSafetyLabelsEndpoint::new(crate::filter::test_support::safety_labels()),
+            GetSafetyLabelsEndpoint::new(Arc::new(SafetyLabelSource::new(Arc::new(
+                RemoteSource::new(labels.clone(), labels),
+            )))),
         )
     }
 
@@ -122,18 +147,7 @@ mod tests {
 
     #[tokio::test]
     async fn evaluate_tweets_loopback() {
-        let tes = MockTESClient {
-            core_data: [(
-                1,
-                Some(PureCoreData {
-                    author_id: 100,
-                    ..Default::default()
-                }),
-            )]
-            .into(),
-            ..Default::default()
-        };
-        let (channel, handle) = serve(server(tes)).await;
+        let (channel, handle) = serve(server(InMemorySources::default().tweet(1, 100))).await;
         let client = XaiVfClient::from_channel(channel);
         let tweet = |tweet_id, outer_tweet_id: Option<u64>| vf_pb::TweetData {
             tweet_id,
@@ -164,7 +178,7 @@ mod tests {
 
     #[tokio::test]
     async fn filter_tweets_loopback() {
-        let (channel, handle) = serve(server(MockTESClient::default())).await;
+        let (channel, handle) = serve(server(InMemorySources::default())).await;
         let mut client = VisibilityFilteringServiceClient::new(channel)
             .send_compressed(CompressionEncoding::Gzip)
             .accept_compressed(CompressionEncoding::Gzip);

@@ -1,6 +1,7 @@
 use super::{Role, Row};
+use crate::hydration::Hydrator;
 use crate::models::HydratedTweetCandidate;
-use crate::rules::fixtures::{allow, candidate, dropped};
+use crate::rules::fixtures::{allow, candidate, dropped, CandidateBuilder};
 use crate::rules::SafetyLevel::TimelineHome;
 use xai_visibility_filtering::models::FilteredReason;
 
@@ -8,7 +9,7 @@ pub(super) fn rows() -> Vec<Row> {
     vec![
         Row {
             name: "exclusive",
-            post: exclusive_candidate(false),
+            post: exclusive_candidate(candidate()),
             expect: vec![
                 (
                     TimelineHome,
@@ -31,13 +32,13 @@ pub(super) fn rows() -> Vec<Row> {
         },
         Row {
             name: "exclusive_super_followed",
-            post: exclusive_candidate(true),
+            post: exclusive_candidate(candidate().with_edge(Hydrator::SuperFollowsExclusive)),
             expect: vec![(TimelineHome, Role::NonFollower, allow())],
         },
         Row {
             name: "exclusive_retweet",
             post: {
-                let mut retweet = exclusive_candidate(false);
+                let mut retweet = exclusive_candidate(candidate());
                 retweet.tweet_features.source_tweet_id = Some(2);
                 retweet
             },
@@ -53,9 +54,8 @@ pub(super) fn rows() -> Vec<Row> {
     ]
 }
 
-fn exclusive_candidate(viewer_super_follows_author: bool) -> HydratedTweetCandidate {
-    let mut c = candidate().build();
+fn exclusive_candidate(builder: CandidateBuilder) -> HydratedTweetCandidate {
+    let mut c = builder.build();
     c.tweet_features.exclusive_conversation_author_id = Some(42);
-    c.viewer_super_follows_exclusive_author = viewer_super_follows_author;
     c
 }

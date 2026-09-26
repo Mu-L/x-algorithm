@@ -80,10 +80,7 @@ from xrex.models.recsys_model import RecsysAggregatedModelConfig
 from xrex.models.sharding_context import make_legacy_sharding_context
 from xrex.optimizers.optim import InjectHyperparamsState, apply_updates
 from xrex.optimizers.recsys import RecsysEmbeddingOptimConfig
-from xrex.optimizers.recsys.async_emb_gradient_update import (
-    AsyncEmbGradientUpdate,
-    AsyncEmbOptimizer,
-)
+from xrex.optimizers.recsys.protocol import AsyncEmbOptimizer
 from xrex.train.misc import (
     CheckpointConfig,
     PostEmbeddings,
@@ -94,7 +91,7 @@ from xrex.train.trainer import (
     Trainer,
     TrainerContext,
 )
-from xrex.utils import cluster, recsys_async_emb_lookup
+from xrex.utils import cluster, recsys_async_emb
 from xrex.utils.aot import JittedOrCompiled
 from xrex.utils.checkpoint_cloud import (
     collect_cloud_upload_files,
@@ -435,13 +432,8 @@ class RecsysTrainer(Trainer):
     _async_emb_context: AsyncEmbContextHandle | None = field(default=None, init=False, repr=False)
     _emb_hash_vocab: int = field(default=0, init=False, repr=False)
     _first_step_embedding_lookup_start_jit: typing.Any = field(default=None, init=False, repr=False)
-    _empty_embedding_grad_update_jit: typing.Any = field(default=None, init=False, repr=False)
-    _apply_deferred_embedding_update_jit: typing.Any = field(default=None, init=False, repr=False)
     _async_emb_step_jit: typing.Any = field(default=None, init=False, repr=False)
     _async_emb_lookup_pin: jax.Array | None = field(default=None, init=False, repr=False)
-    _deferred_emb_grad_update: AsyncEmbGradientUpdate | None = field(
-        default=None, init=False, repr=False
-    )
     _batch_pipeline: BatchPipelineState = field(
         default_factory=BatchPipelineState, init=False, repr=False
     )
@@ -724,24 +716,11 @@ class RecsysTrainer(Trainer):
     def get_recsys_embeddings(
         self, data: RecsysFeaturesBatch, emb_table: Parameter
     ) -> RecsysEmbeddingsParameter:
-        use_ip = (
-            isinstance(self.model_config, (RecsysAggregatedModelConfig, RecsysTwoTowerModelConfig))
-            and self.model_config.use_ip_address
-        )
-        use_user_embedding = (
-            isinstance(self.model_config, (RecsysAggregatedModelConfig, RecsysTwoTowerModelConfig))
-            and self.model_config.use_user_embedding
-        )
-        use_post_embedding = (
-            isinstance(self.model_config, (RecsysAggregatedModelConfig, RecsysTwoTowerModelConfig))
-            and self.model_config.use_post_embedding
-        )
         data_axis = tuple(self.model_config.model_config.data_axis)
 
         hash_leaves = self._get_embedding_hash_leaves(data)
 
         flat_hashes = [x.reshape(self.batch_size, -1) for x in hash_leaves]
-        segment_lengths = [x.shape[1] for x in flat_hashes]
         all_hashes = jax.lax.with_sharding_constraint(
             jnp.concatenate(flat_hashes, axis=1), P(data_axis)
         )
@@ -750,54 +729,7 @@ class RecsysTrainer(Trainer):
             all_embeddings,
             x=jax.lax.with_sharding_constraint(all_embeddings.x, P(data_axis, None, None)),
         )
-        splits = jnp.split(all_embeddings.x, np.cumsum(segment_lengths[:-1]), axis=1)
-
-        if self.using_seqpack:
-            emb_splits = [
-                split.reshape(*leaf.shape, all_embeddings.x.shape[-1])
-                for split, leaf in zip(splits, hash_leaves)
-            ]
-        else:
-            emb_splits = list(splits)
-
-        idx = 0
-        if use_user_embedding:
-            user_x = emb_splits[idx]
-            idx += 1
-        else:
-            user_x = None
-        if use_post_embedding:
-            history_post_x = emb_splits[idx]
-            idx += 1
-        else:
-            history_post_x = None
-        history_author_x = emb_splits[idx]
-        idx += 1
-        if use_post_embedding:
-            candidate_post_x = emb_splits[idx]
-            idx += 1
-        else:
-            candidate_post_x = None
-        candidate_author_x = emb_splits[idx]
-        idx += 1
-        user_ip_x = emb_splits[idx] if use_ip else None
-
-        return RecsysEmbeddingsParameter(
-            user_embeddings=(replace(all_embeddings, x=user_x) if user_x is not None else None),
-            history_post_embeddings=(
-                replace(all_embeddings, x=history_post_x) if history_post_x is not None else None
-            ),
-            history_author_embeddings=replace(all_embeddings, x=history_author_x),
-            candidate_post_embeddings=(
-                replace(all_embeddings, x=candidate_post_x)
-                if candidate_post_x is not None
-                else None
-            ),
-            candidate_author_embeddings=replace(all_embeddings, x=candidate_author_x),
-            user_ip_embeddings=(
-                replace(all_embeddings, x=user_ip_x) if user_ip_x is not None else None
-            ),
-        )
+        return self._unflatten_emb_lookup(data, all_embeddings)
 
     def _unflatten_emb_lookup(
         self, data: RecsysFeaturesBatch, table: Parameter
@@ -1437,7 +1369,6 @@ class RecsysTrainer(Trainer):
         lr: float,
         next_step_data: RecsysFeaturesBatch,
         prev_step_lookup_pin: jax.Array,
-        prev_step_grad_update: AsyncEmbGradientUpdate,
     ):
         assert state.emb_table is not None
         assert state.emb_table_state is not None
@@ -1457,32 +1388,38 @@ class RecsysTrainer(Trainer):
             )
 
         emb_table = state.emb_table
-        flat_prefetched = recsys_async_emb_lookup.lookup_done(
+        flat_prefetched = recsys_async_emb.lookup_done(
             self._async_emb_context, prev_step_lookup_pin
         )
         prefetched_embeddings = flat_prefetched.reshape(
             self.batch_size, -1, flat_prefetched.shape[-1]
         )
 
-        prev_update_pins, updating_table, updating_emb_state, emb_optim_metrics = (
+        update_start_pin, updating_table, updating_emb_state, emb_optim_metrics = (
             self._emb_optim.gradient_update_start(
                 self._async_emb_context,
-                prev_step_grad_update,
                 emb_table.x,
                 state.emb_table_state,
                 gate=prefetched_embeddings[:, 0, :1],
             )
         )
 
-        prefetched_embeddings, *prev_update_pins = jax.lax.optimization_barrier(
-            (prefetched_embeddings, *prev_update_pins)
-        )
         embeddings = self._unflatten_emb_lookup(
             data,
             replace(
                 emb_table,
                 x=jax.lax.with_sharding_constraint(
                     prefetched_embeddings, P(self._async_emb_context.data_axis, None, None)
+                ),
+            ),
+        )
+        candidate_authors = embeddings.candidate_author_embeddings
+        embeddings = replace(
+            embeddings,
+            candidate_author_embeddings=replace(
+                candidate_authors,
+                x=recsys_async_emb.depend(
+                    self._async_emb_context, candidate_authors.x, update_start_pin
                 ),
             ),
         )
@@ -1497,19 +1434,23 @@ class RecsysTrainer(Trainer):
 
         loss, loss_vjp, stats = jax.vjp(loss_fn, fprop_params, embeddings, has_aux=True)
 
-        emb_grad_norm, emb_valid_step, grad_update_done_pin = self._emb_optim.gradient_update_done(
-            self._async_emb_context, loss
-        )
-        emb_valid_step = emb_valid_step | jnp.logical_not(prev_step_grad_update.pending)
-        updated_table, updated_emb_state, grad_update_done_pin = jax.lax.optimization_barrier(
-            (updating_table, updating_emb_state, grad_update_done_pin)
+        (
+            emb_grad_norm,
+            emb_valid_step,
+            emb_update_pending,
+            updated_emb_state,
+            grad_update_done_pin,
+        ) = self._emb_optim.gradient_update_done(self._async_emb_context, updating_emb_state, loss)
+        emb_valid_step = emb_valid_step | ~emb_update_pending
+        updated_emb_state, grad_update_done_pin = jax.lax.optimization_barrier(
+            (updated_emb_state, grad_update_done_pin)
         )
 
         next_step_token_ids, _ = jax.lax.optimization_barrier(
             (self.get_flattened_token_ids(next_step_data).astype(jnp.int32), loss)
         )
-        new_emb_table, next_step_lookup_pin = recsys_async_emb_lookup.lookup_start(
-            self._async_emb_context, next_step_token_ids, updated_table, grad_update_done_pin
+        new_emb_table, next_step_lookup_pin = recsys_async_emb.lookup_start(
+            self._async_emb_context, next_step_token_ids, updating_table, grad_update_done_pin
         )
         loss_cotangent, next_step_lookup_pin = jax.lax.optimization_barrier(
             (jnp.ones_like(loss), next_step_lookup_pin)
@@ -1576,15 +1517,15 @@ class RecsysTrainer(Trainer):
             ("valid_step",): keep_step,
         }
 
-        next_step_grad_update = AsyncEmbGradientUpdate(
-            unique_tokens=unique_tokens,
-            grads=jax.lax.with_sharding_constraint(
-                self._flatten_emb_grads(emb_gradients),
-                P(self._async_emb_context.data_axis, None),
-            ),
-            segment_ids=segment_ids,
-            pending=keep_step,
+        stage_pin = recsys_async_emb.stage_update(
+            self._async_emb_context,
+            self._flatten_emb_grads(emb_gradients),
+            segment_ids,
+            unique_tokens,
+            keep_step,
+            grad_update_done_pin,
         )
+        next_step_lookup_pin = jnp.minimum(next_step_lookup_pin, stage_pin)
 
         new_state = RecsysTrainingState(
             params=new_params,
@@ -1599,9 +1540,7 @@ class RecsysTrainer(Trainer):
             rce_ema=new_rce_ema,
             calib_ema=new_calib_ema,
         )
-
-        extras = {"grad_update_keepalive": tuple(prev_update_pins)}
-        return new_state, metrics, extras, next_step_lookup_pin, next_step_grad_update
+        return new_state, metrics, {}, next_step_lookup_pin
 
     def async_emb_update(
         self,
@@ -1615,17 +1554,9 @@ class RecsysTrainer(Trainer):
                 state, self._async_emb_lookup_pin = self._first_step_embedding_lookup_start_jit(
                     state, data
                 )
-                self._deferred_emb_grad_update = self._empty_embedding_grad_update_jit()
 
-            state, metrics, extras, self._async_emb_lookup_pin, self._deferred_emb_grad_update = (
-                self._async_emb_step_jit(
-                    state,
-                    data,
-                    lr,
-                    self._batch_pipeline.reserve.batch,
-                    self._async_emb_lookup_pin,
-                    self._deferred_emb_grad_update,
-                )
+            state, metrics, extras, self._async_emb_lookup_pin = self._async_emb_step_jit(
+                state, data, lr, self._batch_pipeline.reserve.batch, self._async_emb_lookup_pin
             )
         except Exception:
             assert self._async_emb_context is not None
@@ -1633,32 +1564,6 @@ class RecsysTrainer(Trainer):
             raise
 
         return state, metrics, extras
-
-    def _flush_deferred_embedding_update(self, state: RecsysTrainingState) -> RecsysTrainingState:
-        if self._deferred_emb_grad_update is None or not bool(
-            self._deferred_emb_grad_update.pending
-        ):
-            return state
-
-        assert self._async_emb_context is not None
-        assert state.emb_table is not None
-        try:
-            async_emb.async_emb_api.drain(self._async_emb_context.context_id)
-            state, _keepalive, norm, valid = self._apply_deferred_embedding_update_jit(
-                state, self._deferred_emb_grad_update
-            )
-            jax.block_until_ready(state.emb_table.x)
-            if not bool(valid):
-                rank_logger.warning(
-                    "async_emb: skipped a non-finite deferred update (norm=%s)", float(norm)
-                )
-            async_emb.async_emb_api.reset_table_binding(self._async_emb_context.context_id)
-        except Exception:
-            async_emb.async_emb_api.abort(self._async_emb_context.context_id)
-            raise
-
-        self._deferred_emb_grad_update = self._empty_embedding_grad_update_jit()
-        return state
 
     @property
     def using_seqpack(self) -> bool:
@@ -1764,19 +1669,11 @@ class RecsysTrainer(Trainer):
             num_devices_per_node=self.parallel_config.num_devices_per_node,
         )
 
-        replicated = NamedSharding(self.mesh, P())
         row_sharding = NamedSharding(self.mesh, P(data_axis, None))
-        segment_sharding = NamedSharding(self.mesh, P(data_axis))
-        grad_update_sharding = AsyncEmbGradientUpdate(
-            unique_tokens=replicated,
-            grads=row_sharding,
-            segment_ids=segment_sharding,
-            pending=replicated,
-        )
 
         def first_step_embedding_lookup_start(state, batch):
             token_ids = self.get_flattened_token_ids(batch).astype(jnp.int32)
-            emb_table, lookup_pin = recsys_async_emb_lookup.lookup_start(
+            emb_table, lookup_pin = recsys_async_emb.lookup_start(
                 self._async_emb_context,
                 token_ids,
                 state.emb_table.x,
@@ -1784,35 +1681,6 @@ class RecsysTrainer(Trainer):
             )
             return (state._replace(emb_table=replace(state.emb_table, x=emb_table)), lookup_pin)
 
-        def empty_embedding_grad_update():
-            return AsyncEmbGradientUpdate(
-                unique_tokens=jnp.full((num_unique_tokens,), self._emb_hash_vocab, jnp.int32),
-                grads=jnp.zeros((tokens_per_batch, emb_width), jnp.bfloat16),
-                segment_ids=jnp.zeros((tokens_per_batch,), jnp.int32),
-                pending=jnp.asarray(False),
-            )
-
-        def apply_deferred_embedding_update(state, grad_update):
-            pins, updating_table, updating_emb_state, _ = self._emb_optim.gradient_update_start(
-                self._async_emb_context,
-                grad_update,
-                state.emb_table.x,
-                state.emb_table_state,
-                gate=grad_update.grads[:, :1],
-            )
-            norm, valid, done_pin = self._emb_optim.gradient_update_done(
-                self._async_emb_context, pins[-1]
-            )
-            updated_table, updated_emb_state, _ = jax.lax.optimization_barrier(
-                (updating_table, updating_emb_state, done_pin)
-            )
-            state = state._replace(
-                emb_table=replace(state.emb_table, x=updated_table),
-                emb_table_state=updated_emb_state,
-            )
-            return state, pins, norm, valid
-
-        grad_update_shape = jax.eval_shape(empty_embedding_grad_update)
         lookup_pin_shape = jax.ShapeDtypeStruct((data_shards, 1), jnp.float32)
 
         self._first_step_embedding_lookup_start_jit = JittedOrCompiled(
@@ -1830,25 +1698,6 @@ class RecsysTrainer(Trainer):
             compiler_options=compiler_options,
         )
 
-        self._empty_embedding_grad_update_jit = jax.jit(
-            empty_embedding_grad_update, out_shardings=grad_update_sharding
-        )
-
-        self._apply_deferred_embedding_update_jit = JittedOrCompiled(
-            jax.jit(
-                apply_deferred_embedding_update,
-                in_shardings=(self.state_sharding, grad_update_sharding),
-                out_shardings=(self.state_sharding, None, replicated, replicated),
-                donate_argnums=(0, 1),
-            )
-        )
-        self.register_jit_function(
-            self._apply_deferred_embedding_update_jit,
-            self.state_shape,
-            grad_update_shape,
-            compiler_options=compiler_options,
-        )
-
         self._async_emb_step_jit = JittedOrCompiled(
             jax.jit(
                 self.async_emb_step,
@@ -1858,10 +1707,9 @@ class RecsysTrainer(Trainer):
                     None,
                     self.data_sharding,
                     row_sharding,
-                    grad_update_sharding,
                 ),
-                out_shardings=(self.state_sharding, None, None, row_sharding, grad_update_sharding),
-                donate_argnums=(0, 4, 5),
+                out_shardings=(self.state_sharding, None, None, row_sharding),
+                donate_argnums=(0, 4),
             )
         )
         self.register_jit_function(
@@ -1871,7 +1719,6 @@ class RecsysTrainer(Trainer):
             lr_shape,
             init_data,
             lookup_pin_shape,
-            grad_update_shape,
             compiler_options=compiler_options,
         )
 
@@ -3006,8 +2853,6 @@ class RecsysTrainer(Trainer):
         assert isinstance(dataset, PhoenixDataset), f"Got {type(dataset)}"
         assert isinstance(self.state, RecsysTrainingState), f"Got {type(self.state)}"
 
-        self.state = self._flush_deferred_embedding_update(self.state)
-
         if self.offsets_to_commit:
             items_list = list(self.offsets_to_commit.items())
 
@@ -3106,6 +2951,7 @@ class RecsysTrainer(Trainer):
                 self.host_state = jax.device_put(self.state, self.host_sharding)
             else:
                 self.state, self.host_state = self.offload_state(self.state, self.host_state)
+            jax.block_until_ready(self.host_state)
 
             assert isinstance(self.state, RecsysTrainingState)
             host_state = unwrap_tree(self.host_state)
@@ -3366,9 +3212,11 @@ class RecsysTrainer(Trainer):
             super().run()
         finally:
             exception_type = sys.exc_info()[0]
-            if exception_type is None or issubclass(exception_type, StopIteration):
-                self.state = self._flush_deferred_embedding_update(self.state)
-            elif self._async_emb_context is not None:
+            if (
+                exception_type is not None
+                and not issubclass(exception_type, StopIteration)
+                and self._async_emb_context is not None
+            ):
                 async_emb.async_emb_api.abort(self._async_emb_context.context_id)
 
             shutdown = getattr(self.dataset, "shutdown", None)

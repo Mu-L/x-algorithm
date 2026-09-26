@@ -1,5 +1,6 @@
 use crate::filter::{EvaluationStatus, FilterOutcome, FilterRequest, FilterTweets};
 use crate::filter_tweets::normalize_viewer_id;
+use crate::hydration::Hydrators;
 use crate::models::{RawCandidate, TweetId, Verdict};
 use crate::rules::metrics::{self as ft_metrics, RequestMetricsGuard, Rpc};
 use crate::rules::SafetyLevel;
@@ -127,24 +128,31 @@ impl EvaluateTweetsEndpoint {
                     .await
                     .outcomes
             };
-            let sources: HashMap<TweetId, (EvaluationStatus, Verdict)> = outcomes
+            let sources: HashMap<TweetId, (EvaluationStatus, Verdict, Hydrators)> = outcomes
                 .iter()
                 .filter(|outcome| in_batch.contains(&outcome.tweet_id))
-                .map(|outcome| (outcome.tweet_id, (outcome.status, outcome.verdict.clone())))
-                .chain(
-                    fetched_outcomes
-                        .into_iter()
-                        .map(|outcome| (outcome.tweet_id, (outcome.status, outcome.verdict))),
-                )
+                .map(|outcome| {
+                    (
+                        outcome.tweet_id,
+                        (outcome.status, outcome.verdict.clone(), outcome.rested_on),
+                    )
+                })
+                .chain(fetched_outcomes.into_iter().map(|outcome| {
+                    (
+                        outcome.tweet_id,
+                        (outcome.status, outcome.verdict, outcome.rested_on),
+                    )
+                }))
                 .collect();
             outcomes
                 .into_iter()
                 .map(|mut outcome| {
                     if is_evaluated_retweet(&outcome) {
                         match outcome.source_tweet_id.and_then(|id| sources.get(&id)) {
-                            Some((EvaluationStatus::Evaluated, source)) => {
+                            Some((EvaluationStatus::Evaluated, source, source_rested_on)) => {
                                 outcome.verdict =
                                     Verdict::merge_retweet_verdict(outcome.verdict, source);
+                                outcome.rested_on = outcome.rested_on.union(*source_rested_on);
                             }
                             _ => outcome.status = EvaluationStatus::Failed,
                         }
@@ -157,6 +165,11 @@ impl EvaluateTweetsEndpoint {
             Rpc::EvaluateTweets,
             safety_level,
             outcomes.iter().map(|outcome| &outcome.verdict),
+        );
+        ft_metrics::record_rested_on(
+            Rpc::EvaluateTweets,
+            safety_level,
+            outcomes.iter().map(|outcome| outcome.rested_on),
         );
         let outcomes: HashMap<TweetId, FilterOutcome> = outcomes
             .into_iter()
@@ -197,56 +210,46 @@ impl EvaluateTweetsEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hydration::plan::Source;
+    use crate::hydration::sources::InMemorySources;
+    use crate::rules::RuleEngine;
     use xai_core_entities::entities::{
         GizmoduckUser, GizmoduckUserResult, PureCoreData, Safety, UserResponseState,
     };
-    use xai_core_entities::gizmoduck_client::MockGizmoduckClient;
-    use xai_core_entities::tweet_entity_service_client::MockTESClient;
     use xai_x_thrift::action::{self, Action, DropReason};
 
     #[tokio::test]
     async fn evaluate_tweets_gates_levels_maps_outcomes_and_merges_retweet_sources() {
-        let core = |author_id, source_tweet_id| {
-            Some(PureCoreData {
-                author_id,
-                source_tweet_id,
-                ..Default::default()
-            })
-        };
-        let tes = Arc::new(MockTESClient {
-            core_data: [
-                (3, core(30, None)),
-                (4, core(40, Some(6))),
-                (5, core(50, Some(6))),
-                (6, core(60, None)),
-                (7, core(70, Some(8))),
-            ]
-            .into(),
+        let core = |author_id, source_tweet_id| PureCoreData {
+            author_id,
+            source_tweet_id,
             ..Default::default()
-        });
-        let gizmoduck = MockGizmoduckClient {
-            users: [(
-                60,
-                Some(GizmoduckUserResult {
-                    user: Some(GizmoduckUser {
-                        safety: Safety {
-                            suspended: true,
+        };
+        let sources = Arc::new(
+            InMemorySources::default()
+                .pure_core(3, core(30, None))
+                .pure_core(4, core(40, Some(6)))
+                .pure_core(5, core(50, Some(6)))
+                .pure_core(6, core(60, None))
+                .pure_core(7, core(70, Some(8)))
+                .user(
+                    60,
+                    GizmoduckUserResult {
+                        user: Some(GizmoduckUser {
+                            safety: Safety {
+                                suspended: true,
+                                ..Default::default()
+                            },
                             ..Default::default()
-                        },
-                        ..Default::default()
-                    }),
-                    response_state: Some(UserResponseState::Found),
-                }),
-            )]
-            .into(),
-            ..Default::default()
-        };
-        let endpoint = EvaluateTweetsEndpoint::new(Arc::new(
-            crate::filter::test_support::filter_tweets_with_clients(
-                tes.clone(),
-                Arc::new(gizmoduck),
-            ),
-        ));
+                        }),
+                        response_state: Some(UserResponseState::Found),
+                    },
+                ),
+        );
+        let endpoint = EvaluateTweetsEndpoint::new(Arc::new(FilterTweets::new(
+            sources.clone(),
+            RuleEngine::for_tests(),
+        )));
         for (level, code) in [
             (0, tonic::Code::Unimplemented),
             (4, tonic::Code::Unimplemented),
@@ -329,7 +332,7 @@ mod tests {
                 vec![suspended, Outcome::Failed(vf_pb::Failed {})],
             ),
         ] {
-            let calls_before = tes.call_count();
+            let calls_before = sources.keys(Source::TesPureCore).len();
             let response = endpoint
                 .handle(Request::new(vf_pb::EvaluateTweetsRequest {
                     safety_level: 8,
@@ -339,7 +342,10 @@ mod tests {
                 .await
                 .unwrap()
                 .into_inner();
-            assert_eq!(tes.call_count() - calls_before, core_data_calls);
+            assert_eq!(
+                sources.keys(Source::TesPureCore).len() - calls_before,
+                core_data_calls
+            );
             assert_eq!(
                 response
                     .results

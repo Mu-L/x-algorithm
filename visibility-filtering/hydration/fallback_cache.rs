@@ -66,6 +66,7 @@ where
         let mut stale = 0;
         let mut stale_not_found = 0;
         let mut not_found = 0;
+        let mut partial = 0;
         let mut unavailable = 0;
         let resolved = batch
             .into_hydrated()
@@ -81,6 +82,10 @@ where
                         self.write_entry(generation, &key, None);
                         not_found += 1;
                         Hydrated::NotFound
+                    }
+                    Hydrated::Partial(value) => {
+                        partial += 1;
+                        Hydrated::Partial(value)
                     }
                     Hydrated::Failed(error) => match self.cached_entry(&key) {
                         Some(CacheEntry {
@@ -109,6 +114,7 @@ where
             stale,
             stale_not_found,
             not_found,
+            partial,
             unavailable,
         );
         if generation.is_multiple_of(OCCUPANCY_SAMPLE_INTERVAL) {
@@ -206,6 +212,43 @@ mod tests {
         assert_eq!(resolved.get(&1), Some(&"cached".to_string()));
         assert!(matches!(resolved.hydrated(&2), Some(Hydrated::Failed(_))));
         assert_eq!(resolved.get(&3), Some(&"fresh".to_string()));
+    }
+
+    #[test]
+    fn a_partial_answer_keeps_the_complete_entry_for_a_later_failure() {
+        let cache = cache();
+        cache.resolve_hydration_batch(
+            cache.begin_request(),
+            batch([(1, Hydrated::Found("complete".to_string()))]),
+        );
+
+        let partial = cache.resolve_hydration_batch(
+            cache.begin_request(),
+            batch([(1, Hydrated::Partial("partial".to_string()))]),
+        );
+        let later = cache.resolve_hydration_batch(cache.begin_request(), batch([(1, failed())]));
+
+        assert_eq!(
+            partial.hydrated(&1),
+            Some(&Hydrated::Partial("partial".to_string()))
+        );
+        assert_eq!(
+            later.hydrated(&1),
+            Some(&Hydrated::Found("complete".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_partial_answer_creates_no_entry() {
+        let cache = cache();
+        cache.resolve_hydration_batch(
+            cache.begin_request(),
+            batch([(1, Hydrated::Partial("partial".to_string()))]),
+        );
+
+        let later = cache.resolve_hydration_batch(cache.begin_request(), batch([(1, failed())]));
+
+        assert_eq!(later.hydrated(&1), Some(&failed()));
     }
 
     #[test]

@@ -9,7 +9,7 @@ fn has_verified_badge(data: &ViewerData) -> bool {
     ) || data.is_blue_verified
 }
 
-pub(super) fn viewer_profile(data: ViewerData) -> ViewerProfile {
+pub(crate) fn viewer_profile(data: ViewerData) -> ViewerProfile {
     let viewer_age = match data.age_in_years {
         Some(age) => ViewerAge::Known(age),
         None if data.user_exists => ViewerAge::NotStated,

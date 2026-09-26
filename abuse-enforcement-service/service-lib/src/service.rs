@@ -110,6 +110,7 @@ pub struct AppState {
     pub growthbook_environment: String,
         pub kafka_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
                 pub kafka_producers: crate::KafkaProducers,
+                pub hold_gate: std::sync::Arc<crate::overturn_hold::HoldGate>,
 }
 
 #[derive(Debug, Serialize)]

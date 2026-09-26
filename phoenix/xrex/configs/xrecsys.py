@@ -86,6 +86,8 @@ def _make_feature_prep_config(mparams: dict, scale_config: ScaleConfig) -> Featu
         sid_codebook_size=mparams.get("sid_codebook_size", 1024),
         sid_hash_level=mparams.get("sid_hash_level", False),
         sid_cross_attn=mparams.get("sid_cross_attn", False),
+        sid_embedding_mode=mparams.get("sid_embedding_mode", "learned"),
+        sid_decoder_path=mparams.get("sid_decoder_path", ""),
         enable_stale_post=mparams.get("enable_stale_post", False),
     )
 

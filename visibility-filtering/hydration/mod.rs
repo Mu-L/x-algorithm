@@ -1,22 +1,20 @@
 pub mod batch;
+mod decode;
 mod execute;
 pub(crate) mod fallback_cache;
-pub mod gizmoduck_hydrator;
 pub mod metrics;
 pub(crate) mod plan;
-pub mod safety_label_hydrator;
 pub(crate) mod sources;
+mod store;
 pub mod tes_composite;
-pub mod tes_hydrator;
-pub mod viewer_hydrator;
 
-use crate::models::{
-    AuthorId, HydratedTweetCandidate, PureCore, RawCandidate, TweetCandidateInput, TweetId,
-    ViewerFeatures,
-};
+use crate::models::{HydratedTweetCandidate, PureCore, RawCandidate, TweetId, ViewerFeatures};
 use batch::TweetHydrationBatch;
+pub(crate) use decode::author::fallback_cache as author_fallback_cache;
+pub(crate) use decode::tweet::pure_core_fallback_cache;
 pub(crate) use plan::HydrationPlan;
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
 use xai_visibility_filtering_proto as vf_pb;
@@ -57,11 +55,12 @@ pub enum Hydrator {
     BlockedByReplyRoot,
     SuperFollowsExclusive,
     RootFollowsViewer,
+    RootFollowsViewerSecondDegree,
     SuperFollowsRoot,
     ViewerCountry,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Hydrators(u32);
 
 impl Hydrators {
@@ -94,6 +93,14 @@ impl Hydrators {
     pub const fn contains(self, hydrator: Hydrator) -> bool {
         self.0 & Self::of(hydrator).0 != 0
     }
+
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 pub(crate) struct HydrationRequest<'a> {
@@ -116,28 +123,14 @@ impl<'a> HydrationRequest<'a> {
     }
 }
 
-pub(crate) fn tweets_per_author(candidates: &[TweetCandidateInput]) -> HashMap<AuthorId, usize> {
-    let mut candidate_count_by_key = HashMap::with_capacity(candidates.len());
-    for candidate in candidates {
-        *candidate_count_by_key
-            .entry(candidate.author_id)
-            .or_default() += 1;
+pub(crate) fn candidate_count_by_key<K: Eq + Hash>(
+    keys: impl Iterator<Item = K>,
+) -> HashMap<K, usize> {
+    let mut candidate_count_by_key = HashMap::with_capacity(keys.size_hint().0);
+    for key in keys {
+        *candidate_count_by_key.entry(key).or_default() += 1;
     }
     candidate_count_by_key
-}
-
-pub(crate) fn keyed_by_author<V>(
-    expected: &HashMap<AuthorId, usize>,
-    response: HashMap<u64, V>,
-) -> HashMap<AuthorId, V> {
-    let author_by_raw: HashMap<u64, AuthorId> = expected
-        .keys()
-        .map(|&author| (author.get(), author))
-        .collect();
-    response
-        .into_iter()
-        .filter_map(|(id, value)| author_by_raw.get(&id).map(|&author| (author, value)))
-        .collect()
 }
 
 pub(crate) struct HydrationOutput {

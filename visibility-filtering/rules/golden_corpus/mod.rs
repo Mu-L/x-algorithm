@@ -13,9 +13,8 @@ mod takedown;
 mod tweet_label;
 mod tweet_state;
 
-use crate::models::{
-    HydratedTweetCandidate, Verdict, ViewerAuthorRelationship, ViewerBlockedBy, ViewerFeatures,
-};
+use crate::hydration::{Hydrator, Hydrators};
+use crate::models::{HydratedTweetCandidate, Verdict, ViewerFeatures};
 use crate::rules::fixtures::{logged_out_viewer, viewer, VIEWER_ID};
 use crate::rules::{RuleEngine, SafetyLevel};
 use crate::treatment::proto_action;
@@ -40,11 +39,11 @@ struct Row {
     expect: Vec<(SafetyLevel, Role, Verdict)>,
 }
 
-pub(super) struct CorpusCase {
+struct CorpusCase {
     name: String,
-    pub(super) level: SafetyLevel,
-    pub(super) viewer: ViewerFeatures,
-    pub(super) candidate: HydratedTweetCandidate,
+    level: SafetyLevel,
+    viewer: ViewerFeatures,
+    candidate: HydratedTweetCandidate,
     expected: Verdict,
 }
 
@@ -57,12 +56,11 @@ impl Row {
                 Role::NonFollower => ("non_follower", viewer(VIEWER_ID)),
                 Role::Author => ("author", viewer(candidate.author_id)),
                 Role::Follower => {
-                    candidate.relationship.viewer_follows_author = true;
+                    candidate.edges = candidate.edges.with(Hydrator::Follows);
                     ("follower", viewer(VIEWER_ID))
                 }
                 Role::LoggedOut => {
-                    candidate.relationship = ViewerAuthorRelationship::default();
-                    candidate.blocked_by = ViewerBlockedBy::default();
+                    candidate.edges = Hydrators::empty();
                     ("logged_out", logged_out_viewer())
                 }
                 Role::As(role_name, viewer) => (role_name, viewer),
@@ -97,7 +95,9 @@ fn golden_corpus_pins_policy_verdicts() {
     assert_eq!(names.len(), cases.len(), "duplicate corpus case name");
     let mut failures = Vec::new();
     for case in cases {
-        let verdict = rule_engine.evaluate(case.level, &case.viewer, &case.candidate);
+        let verdict = rule_engine
+            .evaluate(case.level, &case.viewer, &case.candidate)
+            .verdict;
         if matches!(&case.expected, Verdict::Shown { media: Some(_), .. }) {
             let (action, reason) = proto_action(verdict.clone());
             assert_eq!(action.encode_to_vec(), [0x20, 0x01], "{}", case.name);
@@ -124,6 +124,18 @@ fn golden_corpus_pins_policy_verdicts() {
 }
 
 #[test]
+fn every_node_failing_changes_no_corpus_verdict() {
+    let rule_engine = RuleEngine::for_tests();
+    for mut case in corpus() {
+        case.candidate.failed = Hydrators::all();
+        let verdict = rule_engine
+            .evaluate(case.level, &case.viewer, &case.candidate)
+            .verdict;
+        assert_eq!(verdict, case.expected, "{}", case.name);
+    }
+}
+
+#[test]
 fn every_wired_rule_decides_a_corpus_case() {
     let rule_engine = RuleEngine::for_tests();
     let wired: BTreeSet<&'static str> = [
@@ -147,7 +159,7 @@ fn every_wired_rule_decides_a_corpus_case() {
     );
 }
 
-pub(super) fn corpus() -> Vec<CorpusCase> {
+fn corpus() -> Vec<CorpusCase> {
     rows().into_iter().flat_map(Row::expand).collect()
 }
 

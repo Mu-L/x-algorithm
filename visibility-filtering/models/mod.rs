@@ -1,7 +1,6 @@
 pub mod author;
 pub mod conversation_control;
 pub mod region;
-pub mod relationship;
 pub mod safety_labels;
 pub mod tweet;
 pub mod verdict;
@@ -9,7 +8,6 @@ pub mod viewer;
 
 pub use author::{AuthorFeatures, AuthorLabel, AuthorLabelSet};
 pub use conversation_control::ConversationControlFeatures;
-pub use relationship::{ViewerAuthorRelationship, ViewerBlockedBy};
 pub use safety_labels::{SafetyLabelMap, SafetyLabelType};
 pub use tweet::{MediaFeature, NsfwFeature, TweetFeatures};
 pub use verdict::{
@@ -19,6 +17,7 @@ pub use verdict::{
 pub use viewer::{Viewer, ViewerAge, ViewerFeatures, ViewerProfile};
 
 use crate::hydration::batch::TweetHydrationBatch;
+use crate::hydration::Hydrators;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TweetId(pub u64);
@@ -83,10 +82,9 @@ pub struct HydratedTweetCandidate {
     pub author_features: AuthorFeatures,
     pub author_labels: AuthorLabelSet,
     pub safety_labels: SafetyLabelMap,
-    pub relationship: ViewerAuthorRelationship,
-    pub blocked_by: ViewerBlockedBy,
-    pub viewer_super_follows_exclusive_author: bool,
+    pub edges: Hydrators,
     pub conversation_control: Option<ConversationControlFeatures>,
+    pub failed: Hydrators,
 }
 
 #[cfg(test)]

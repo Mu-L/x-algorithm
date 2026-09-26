@@ -1,25 +1,38 @@
-use crate::hydration::batch::{AuthorHydrationBatch, Completeness};
+use crate::hydration::batch::{Hydrated, HydrationBatch, RawHydrationBatch};
 use crate::hydration::fallback_cache::FallbackCache;
 use crate::hydration::metrics::record_author_labels;
-use crate::models::{AuthorFeatures, AuthorId, AuthorLabel, AuthorLabelSet};
+use crate::models::{AuthorFeatures, AuthorLabel, AuthorLabelSet};
 use xai_core_entities::entities::{GizmoduckUserResult, UserResponseState};
 use xai_x_thrift::user_labels::LabelValue;
 const CACHE_CAPACITY: usize = 1_000_000;
 
 pub(crate) type DecodedAuthor = (AuthorFeatures, AuthorLabelSet);
-pub(crate) type AuthorFallbackCache = FallbackCache<AuthorId, Completeness<DecodedAuthor>>;
+pub(crate) type AuthorFallbackCache = FallbackCache<u64, DecodedAuthor>;
 
 pub(crate) fn fallback_cache() -> AuthorFallbackCache {
     FallbackCache::new("author", CACHE_CAPACITY)
 }
 
-pub(super) fn decode_authors(
-    users: AuthorHydrationBatch<GizmoduckUserResult>,
-) -> AuthorHydrationBatch<Completeness<DecodedAuthor>> {
+pub(crate) fn decode_authors(
+    users: RawHydrationBatch<GizmoduckUserResult>,
+) -> RawHydrationBatch<DecodedAuthor> {
     let mut label_counts = LabelCounts::default();
-    let authors = users.map(|result| evaluable_author_features(result, &mut label_counts));
+    let authors = users
+        .into_hydrated()
+        .into_iter()
+        .map(|(author, user)| {
+            let decoded = match user {
+                Hydrated::Found(result) | Hydrated::Partial(result) => {
+                    evaluable_author_features(result, &mut label_counts)
+                }
+                Hydrated::NotFound => Hydrated::NotFound,
+                Hydrated::Failed(error) => Hydrated::Failed(error),
+            };
+            (author, decoded)
+        })
+        .collect();
     record_author_labels(label_counts.mapped, label_counts.unmapped);
-    authors
+    HydrationBatch::from_hydrated(authors)
 }
 
 #[derive(Default)]
@@ -31,12 +44,17 @@ struct LabelCounts {
 fn evaluable_author_features(
     result: GizmoduckUserResult,
     counts: &mut LabelCounts,
-) -> Completeness<DecodedAuthor> {
-    let complete = !matches!(
+) -> Hydrated<DecodedAuthor> {
+    let partial = matches!(
         result.response_state,
         None | Some(UserResponseState::Failed) | Some(UserResponseState::Partial)
     );
-    Completeness::new(complete, author_features(result, counts))
+    let author = author_features(result, counts);
+    if partial {
+        Hydrated::Partial(author)
+    } else {
+        Hydrated::Found(author)
+    }
 }
 
 fn author_features(user_result: GizmoduckUserResult, counts: &mut LabelCounts) -> DecodedAuthor {
@@ -114,15 +132,15 @@ mod tests {
             (Some(UserResponseState::Failed), false),
             (None, false),
         ] {
-            let features = evaluable_author_features(
+            let author = evaluable_author_features(
                 GizmoduckUserResult {
                     response_state: state,
                     ..suspended.clone()
                 },
                 &mut LabelCounts::default(),
             );
-            assert_eq!(features.is_complete(), complete, "{state:?}");
-            assert!(features.value().0.is_suspended, "{state:?}");
+            assert_eq!(matches!(author, Hydrated::Found(_)), complete, "{state:?}");
+            assert!(author.value().unwrap().0.is_suspended, "{state:?}");
         }
     }
 

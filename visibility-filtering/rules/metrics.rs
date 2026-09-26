@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use xai_stats_receiver::{global_stats_receiver, HistogramBuckets};
 
+use crate::hydration::Hydrators;
 use crate::models::Verdict;
 use crate::rules::SafetyLevel;
 use crate::treatment;
@@ -13,6 +14,8 @@ const LATENCY_MS: &str = "filter_tweets_latency_ms";
 pub(crate) const BATCH_SIZE: &str = "filter_tweets_batch_size";
 const VERDICTS: &str = "filter_tweets_verdicts";
 const VERDICTS_BY_RULE: &str = "filter_tweets_verdicts_by_rule";
+const EVALUATED_CANDIDATES: &str = "filter_tweets_evaluated_candidates";
+const RESTED_ON_NONE: &str = "none";
 const LOGGED_OUT_VIEWER: &str = "filter_tweets_logged_out_viewer";
 const VIEWER_ID_NORMALIZED: &str = "filter_tweets_viewer_id_normalized";
 const PHASE_MS: &str = "filter_tweets_phase_ms";
@@ -81,6 +84,45 @@ pub(crate) fn record_verdicts<'a>(
                 ("rpc", rpc),
             ],
             *count,
+        );
+    }
+}
+
+pub(crate) fn record_rested_on(
+    rpc: Rpc,
+    safety_level: SafetyLevel,
+    rested_on: impl IntoIterator<Item = Hydrators>,
+) {
+    let mut on_none = 0;
+    let mut on_failed: HashMap<Hydrators, u64> = HashMap::new();
+    for nodes in rested_on {
+        if nodes.is_empty() {
+            on_none += 1;
+        } else {
+            *on_failed.entry(nodes).or_default() += 1;
+        }
+    }
+    let level = <&str>::from(safety_level);
+    let rpc = rpc.into();
+    incr_nonzero(
+        EVALUATED_CANDIDATES,
+        &[
+            ("rested_on", RESTED_ON_NONE),
+            ("safety_level", level),
+            ("rpc", rpc),
+        ],
+        on_none,
+    );
+    for (nodes, count) in on_failed {
+        let nodes: Vec<&str> = nodes.iter().map(<&str>::from).collect();
+        incr(
+            EVALUATED_CANDIDATES,
+            &[
+                ("rested_on", &nodes.join("+")),
+                ("safety_level", level),
+                ("rpc", rpc),
+            ],
+            count,
         );
     }
 }
@@ -184,6 +226,8 @@ mod tests {
     use crate::models::{
         Decided, LimitedEngagement, LimitedEngagementReason, MediaInterstitial, Withholding,
     };
+    use std::fs;
+    use std::path::Path;
     use xai_visibility_filtering::models::FilteredReason;
     use xai_x_thrift::action::InterstitialReason;
 
@@ -206,6 +250,20 @@ mod tests {
             value: LimitedEngagement(LimitedEngagementReason::ConversationControl),
             by: rule,
         }
+    }
+
+    #[test]
+    fn dashboard_generator_pins_the_evaluated_candidates_metric_and_its_none_label() {
+        let cargo = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/dashboard.py");
+        let ws = "crates/x-product/xai-visibility-filtering-service/scripts/dashboard.py";
+        let path = if Path::new(cargo).exists() { cargo } else { ws };
+        let dashboard = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        assert!(dashboard.contains(&format!(
+            "FT_EVALUATED_CANDIDATES_METRIC = \"{EVALUATED_CANDIDATES}\""
+        )));
+        assert!(dashboard.contains(&format!(
+            "FT_RESTED_ON_UNKNOWN_FILTER = 'rested_on!=\"{RESTED_ON_NONE}\"'"
+        )));
     }
 
     #[test]

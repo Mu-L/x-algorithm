@@ -1,8 +1,8 @@
 use crate::hydration::sources::Sources;
-use crate::hydration::{HydrationOutput, HydrationRequest};
+use crate::hydration::{HydrationOutput, HydrationRequest, Hydrators};
 use crate::models::{RawCandidate, TweetId, Verdict};
 use crate::rules::metrics::{self as ft_metrics, Rpc};
-use crate::rules::{RuleEngine, SafetyLevel};
+use crate::rules::{Evaluation, RuleEngine, SafetyLevel};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,6 +27,7 @@ pub struct FilterOutcome {
     pub tweet_id: TweetId,
     pub source_tweet_id: Option<TweetId>,
     pub verdict: Verdict,
+    pub rested_on: Hydrators,
     pub status: EvaluationStatus,
     pub safety_labels: Option<vf_pb::SafetyLabelMap>,
 }
@@ -67,7 +68,7 @@ impl FilterTweets {
             failed_ids,
             pure_cores,
         } = hydration;
-        let evaluated: HashMap<TweetId, Verdict> = hydrated_candidates
+        let evaluated: HashMap<TweetId, Evaluation> = hydrated_candidates
             .iter()
             .map(|candidate| {
                 (
@@ -82,15 +83,22 @@ impl FilterTweets {
             .candidates
             .iter()
             .map(|candidate| {
-                let (verdict, status) = match evaluated.get(&candidate.tweet_id) {
+                let (verdict, rested_on, status) = match evaluated.get(&candidate.tweet_id) {
                     None => (
                         Verdict::unresolved_author(),
+                        Hydrators::empty(),
                         EvaluationStatus::UnresolvedAuthor,
                     ),
-                    Some(verdict) if failed_ids.contains(&candidate.tweet_id) => {
-                        (verdict.clone(), EvaluationStatus::Failed)
-                    }
-                    Some(verdict) => (verdict.clone(), EvaluationStatus::Evaluated),
+                    Some(evaluation) if failed_ids.contains(&candidate.tweet_id) => (
+                        evaluation.verdict.clone(),
+                        evaluation.rested_on,
+                        EvaluationStatus::Failed,
+                    ),
+                    Some(evaluation) => (
+                        evaluation.verdict.clone(),
+                        evaluation.rested_on,
+                        EvaluationStatus::Evaluated,
+                    ),
                 };
                 FilterOutcome {
                     tweet_id: candidate.tweet_id,
@@ -98,6 +106,7 @@ impl FilterTweets {
                         .get(&candidate.tweet_id)
                         .and_then(|core| core.source_tweet_id),
                     verdict,
+                    rested_on,
                     status,
                     safety_labels: safety_labels
                         .get(&candidate.tweet_id)
@@ -113,120 +122,9 @@ impl FilterTweets {
 }
 
 #[cfg(test)]
-pub(crate) mod test_support {
-    use super::*;
-    use crate::clients::about_this_account_client::NoCountryRows;
-    use crate::clients::socialgraph_client::NoEdges;
-    use crate::hydration::sources::ProdSources;
-    use crate::hydration::tes_composite::{MockTweetForVisibilitySource, TweetForVisibility};
-    use crate::safety_label_source::lookup::{ManhattanLookup, RemoteSource, TwemcacheLookup};
-    use crate::safety_label_source::types::{ManhattanOutcome, TwemcacheOutcome};
-    use crate::safety_label_source::SafetyLabelSource;
-    use tonic::async_trait;
-    use xai_core_entities::gizmoduck_client::{GizmoduckClient, MockGizmoduckClient};
-    use xai_core_entities::tweet_entity_service_client::{MockTESClient, TESClient};
-
-    fn full_label_map() -> vf_pb::SafetyLabelMap {
-        vf_pb::SafetyLabelMap {
-            labels: HashMap::from([(999_999, vf_pb::SafetyLabel::default())]),
-        }
-    }
-
-    struct FakeTwemcache;
-
-    #[async_trait]
-    impl TwemcacheLookup for FakeTwemcache {
-        async fn get(&self, ids: &[u64]) -> HashMap<u64, TwemcacheOutcome> {
-            ids.iter()
-                .copied()
-                .map(|id| {
-                    let outcome = if id == 2 {
-                        TwemcacheOutcome::Hit(full_label_map())
-                    } else {
-                        TwemcacheOutcome::Miss
-                    };
-                    (id, outcome)
-                })
-                .collect()
-        }
-    }
-
-    struct FakeManhattan;
-
-    #[async_trait]
-    impl ManhattanLookup for FakeManhattan {
-        async fn get(&self, ids: &[u64]) -> HashMap<u64, ManhattanOutcome> {
-            ids.iter()
-                .copied()
-                .map(|id| (id, ManhattanOutcome::Resolved(full_label_map())))
-                .collect()
-        }
-    }
-
-    pub(crate) fn filter_tweets() -> FilterTweets {
-        filter_tweets_with_gizmoduck(Arc::new(MockGizmoduckClient::default()))
-    }
-
-    pub(crate) fn filter_tweets_with_gizmoduck(
-        gizmoduck: Arc<dyn GizmoduckClient + Send + Sync>,
-    ) -> FilterTweets {
-        filter_tweets_with_clients(Arc::new(MockTESClient::default()), gizmoduck)
-    }
-
-    pub(crate) fn safety_labels() -> Arc<SafetyLabelSource> {
-        safety_labels_with_manhattan(Arc::new(FakeManhattan))
-    }
-
-    pub(crate) fn safety_labels_with_manhattan<M: ManhattanLookup + 'static>(
-        manhattan: Arc<M>,
-    ) -> Arc<SafetyLabelSource> {
-        Arc::new(SafetyLabelSource::new(Arc::new(RemoteSource::new(
-            Arc::new(FakeTwemcache),
-            manhattan,
-        ))))
-    }
-
-    pub(crate) fn exclusive_tweet() -> TweetForVisibility {
-        TweetForVisibility {
-            author_id: 900,
-            source_tweet_id: None,
-            is_nullcast: false,
-            nsfw_user: false,
-            nsfw_admin: false,
-            has_takedown: false,
-            takedown_reasons: vec![],
-            media: Default::default(),
-            is_community_tweet: false,
-            edit_control: None,
-            exclusive_conversation_author_id: Some(30),
-        }
-    }
-
-    pub(crate) fn filter_tweets_with_clients(
-        tes: Arc<dyn TESClient + Send + Sync>,
-        gizmoduck: Arc<dyn GizmoduckClient + Send + Sync>,
-    ) -> FilterTweets {
-        FilterTweets::new(
-            Arc::new(ProdSources::new(
-                tes,
-                Arc::new(MockTweetForVisibilitySource::default()),
-                gizmoduck,
-                Arc::new(NoEdges),
-                Arc::new(NoCountryRows),
-                safety_labels(),
-                None,
-                None,
-            )),
-            RuleEngine::for_tests(),
-        )
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::clients::socialgraph_client::{EdgeQuery, Graph};
-    use crate::filter::test_support::filter_tweets;
     use crate::hydration::plan::Source;
     use crate::hydration::sources::{Fault, InMemorySources};
     use crate::models::LimitedEngagementReason;
@@ -341,7 +239,15 @@ mod tests {
     }
     #[tokio::test]
     async fn run_preserves_order_duplicates_unresolved_authors_and_labels() {
-        let response = filter_tweets()
+        let labels = vf_pb::SafetyLabelMap {
+            labels: HashMap::from([(999_999, vf_pb::SafetyLabel::default())]),
+        };
+        let sources = Arc::new(
+            InMemorySources::default()
+                .labels(1, Default::default())
+                .labels(2, labels),
+        );
+        let response = service(&sources)
             .run(FilterRequest {
                 viewer_id: None,
                 country_code: None,

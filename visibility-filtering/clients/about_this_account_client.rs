@@ -40,17 +40,6 @@ impl AboutThisAccountClient for ProdAboutThisAccountClient {
     }
 }
 
-#[cfg(test)]
-pub(crate) struct NoCountryRows;
-
-#[cfg(test)]
-#[async_trait]
-impl AboutThisAccountClient for NoCountryRows {
-    async fn tfe_top_country(&self, _: u64) -> anyhow::Result<Option<String>> {
-        Ok(None)
-    }
-}
-
 #[derive(Debug, Default, PartialEq)]
 struct UserTfeTopCountry {
     weighted_top_country: Option<String>,

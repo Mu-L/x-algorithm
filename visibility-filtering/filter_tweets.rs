@@ -81,6 +81,11 @@ impl FilterTweetsEndpoint {
             safety_level,
             response.outcomes.iter().map(|outcome| &outcome.verdict),
         );
+        ft_metrics::record_rested_on(
+            Rpc::FilterTweets,
+            safety_level,
+            response.outcomes.iter().map(|outcome| outcome.rested_on),
+        );
 
         if let Some(verdicts) = reference_compare {
             verdicts.send(
@@ -143,16 +148,15 @@ fn to_visibility_result(outcome: FilterOutcome) -> vf_pb::TweetVisibilityResult 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hydration::plan::Source;
+    use crate::hydration::sources::InMemorySources;
     use crate::reference_compare::tests::{fake_harness, FakeReply};
+    use crate::rules::RuleEngine;
 
     async fn gizmoduck_calls(viewer_id: Option<u64>) -> usize {
-        let gizmoduck = std::sync::Arc::new(
-            xai_core_entities::gizmoduck_client::MockGizmoduckClient::default(),
-        );
+        let sources = Arc::new(InMemorySources::default());
         let endpoint = FilterTweetsEndpoint::new(
-            Arc::new(crate::filter::test_support::filter_tweets_with_gizmoduck(
-                gizmoduck.clone(),
-            )),
+            Arc::new(FilterTweets::new(sources.clone(), RuleEngine::for_tests())),
             None,
         );
         let response = endpoint
@@ -168,7 +172,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.into_inner().results.len(), 1);
-        gizmoduck.call_count()
+        sources
+            .calls()
+            .into_iter()
+            .filter(|source| matches!(source, Source::GizmoduckViewer | Source::GizmoduckAuthor))
+            .count()
     }
 
     #[tokio::test]
@@ -183,7 +191,10 @@ mod tests {
     async fn reference_compare_sees_the_normalized_viewer_id() {
         let (harness, reference) = fake_harness(FakeReply::Immediate);
         let endpoint = FilterTweetsEndpoint::new(
-            Arc::new(crate::filter::test_support::filter_tweets()),
+            Arc::new(FilterTweets::new(
+                Arc::new(InMemorySources::default()),
+                RuleEngine::for_tests(),
+            )),
             Some(harness),
         );
         for viewer_id in [Some(0), Some(42)] {

@@ -845,7 +845,7 @@ def _retrieval_export(
                 "split_home_checkpoint requires --dataset_capacities so HOME is the "
                 "cold|hot window, not a mask for stored type 1"
             )
-        if not any(ds.name == "HOME_COLD" for ds in datasets):
+        if "HOME_COLD" in dataset_capacities and not any(ds.name == "HOME_COLD" for ds in datasets):
             from xrex.data.retrieval_dataset import RetrievalDataset
 
             datasets.append(RetrievalDataset.HOME_COLD)

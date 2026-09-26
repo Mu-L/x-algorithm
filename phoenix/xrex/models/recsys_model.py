@@ -715,11 +715,6 @@ class RecsysAggregatedModelConfig(Config):
                 )
 
         if self.sid_embedding_mode == "recon":
-            assert not self.feature_prep_enabled, (
-                "sid_embedding_mode='recon' is only implemented on the legacy build_inputs "
-                "path; the feature_prep path embeds SIDs via its own learned tables "
-                "(FeaturePrepConfig.enable_post_sid) and would silently ignore recon."
-            )
             assert not self.sid_hash_level and not self.sid_cross_attn, (
                 "sid_embedding_mode='recon' replaces the learned SID tables outright; "
                 "sid_hash_level / sid_cross_attn only apply to mode='learned'."

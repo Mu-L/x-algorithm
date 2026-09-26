@@ -174,7 +174,10 @@ class EmbeddingRankedKeyFrames:
         scores |= await cls._score(frames, fine_indices, query, direction)
         attempted += len(fine_indices)
 
-        scored = sorted(scores)
+        min_score = cfg.embedding_ranked_key_frames_min_score
+        scored = sorted(
+            i for i in scores if min_score is None or scores[i] >= min_score
+        )
         picks = pick_peaks(
             times[scored],
             np.array([scores[i] for i in scored]),
@@ -185,8 +188,11 @@ class EmbeddingRankedKeyFrames:
         logger.info(
             f"embedding-ranked key frames ({query.name}): {len(frames)} frames over {times[-1]:.1f}s, "
             f"embedded {len(scores)} (failed {attempted - len(scores)}), "
+            f"best {round(max(scores.values()), 4) if scores else None}, min score {min_score}, "
             f"picked {[(float(times[i]), round(scores[i], 4)) for i in chosen]}"
         )
+        if not chosen:
+            return []
         chosen_frames = await FrameSampler.frames_at(
             video_bytes, [frames[i].time_sec for i in chosen], tile_size
         )
